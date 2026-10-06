@@ -14,7 +14,7 @@ import { Engine } from './engine';
 import { Metrics } from './metrics';
 import { type LinkDef, serializationDelayMs, makeRng } from './link';
 import { type LayerDef, applyDown, applyUp, reliabilityLayers, delayOf } from './layer';
-import { distanceVector, linkState, type RoutingResult } from './routing';
+import { distanceVector, latencyFrom, linkState, type RoutingResult, type RoutingTables } from './routing';
 import type { Packet, PacketMoveEvent, SimEvent } from './types';
 
 export interface FlowDef {
@@ -41,7 +41,12 @@ export interface NetworkConfig {
   routing: 'dv' | 'ls';
   seed: number;
   durationMs: number;
+  // Distance Vector exchange period: after a topology change, round k of re-convergence
+  // takes effect (k - 1) periods later. Link State instead floods at link speed.
+  routingRoundMs?: number;
 }
+
+export const DEFAULT_ROUTING_ROUND_MS = 100;
 
 export interface RunResult {
   metrics: Metrics;
@@ -52,6 +57,11 @@ export interface RunResult {
 const ACK_BYTES = 40;
 const FRAG_HEADER_BYTES = 8;
 export const MAX_RETRIES = 6;
+const FAST_RETRANSMIT_THRESHOLD = 3; // later packets ACKed before we call one lost, as TCP's 3 dup-ACKs
+/** `retransmit` metric value: 1 = the timer fired, 2 = fast retransmit. */
+export const FAST_RETRANSMIT = 2;
+const RTO_MAX_MS = 5000;
+const RTO_MIN_MS = 200; // Linux's floor: room for later ACKs (fast retransmit) before the timer
 
 /** A data packet the sender has transmitted but not yet seen acknowledged. */
 interface Outstanding {
@@ -59,14 +69,19 @@ interface Outstanding {
   sentAt: number;
   attempt: number;        // bumped per transmission; stale timers compare against it
   retransmitted: boolean; // Karn's rule: no RTT samples from retransmitted packets
+  laterAcks: number;      // packets sent after this one that were ACKed first
 }
 
 interface SenderState {
   flow: FlowDef;
   cwnd: number;
+  ssthresh: number;       // slow-start mode: below this the window doubles per round trip
   lastDecreaseAt: number;
   outstanding: Map<number, Outstanding>;
   backlog: Packet[];      // generated but held back by the window
+  rto: number;            // current retransmit timeout
+  srtt?: number;          // smoothed RTT (adaptive timeout only)
+  rttvar?: number;        // RTT variation (adaptive timeout only)
 }
 
 interface ReceiverState {
@@ -101,6 +116,10 @@ export function runSimulation(cfg: NetworkConfig): RunResult {
   const rel = reliabilityLayers(cfg.stack);
   const ackLayer = rel.ack, rtxLayer = rel.rtx, winLayer = rel.win;
   const timeoutMs = Math.max(1, rel.timer?.timeoutMs ?? 500);
+  const rtxParams = rtxLayer?.primitives.find((p) => p.kind === 'RETRANSMIT')?.params ?? {};
+  const adaptiveRto = rtxParams.rto === 'adaptive';
+  const fastRetransmit = !!rtxLayer && rtxParams.fast === 'on';
+  const slowStart = !!winLayer && winLayer.primitives.find((p) => p.kind === 'WINDOW')?.params.growth === 'slow-start';
   const maxWindow = winLayer ? Math.max(1, winLayer.windowSize) : Infinity;
   const hasSequence = !!rel.seq;
   const inOrder = hasSequence && !!rtxLayer; // only a retransmitting stack can afford to wait for gaps
@@ -114,7 +133,12 @@ export function runSimulation(cfg: NetworkConfig): RunResult {
       ? distanceVector(cfg.nodes, [...linkMap.values()])
       : linkState(cfg.nodes, [...linkMap.values()]);
 
-  let routing = computeRouting();
+  // The tables routers actually forward with. They start converged; after a
+  // topology change they catch up gradually (see the FAULT handler).
+  const initial = computeRouting();
+  const live: RoutingTables = { nextHop: structuredClone(initial.nextHop), dist: structuredClone(initial.dist) };
+  const roundMs = Math.max(1, cfg.routingRoundMs ?? DEFAULT_ROUTING_ROUND_MS);
+  let routingEpoch = 0; // a newer topology change supersedes updates still on their way
 
   const linkBetween = (a: string, b: string): LinkDef | undefined => {
     return linkMap.get(`${a}-${b}`) || linkMap.get(`${b}-${a}`);
@@ -128,7 +152,7 @@ export function runSimulation(cfg: NetworkConfig): RunResult {
   const reassembly = new Map<string, Reassembly>();
   const linkBusy = new Map<string, number[]>(); // per link direction: serialization end times, FIFO
   for (const f of cfg.flows) {
-    senders.set(f.id, { flow: f, cwnd: 1, lastDecreaseAt: -Infinity, outstanding: new Map(), backlog: [] });
+    senders.set(f.id, { flow: f, cwnd: 1, ssthresh: maxWindow, lastDecreaseAt: -Infinity, outstanding: new Map(), backlog: [], rto: timeoutMs });
     receivers.set(f.id, { received: new Set(), nextExpected: 0, holding: new Map(), nextRelease: 0, highestHanded: -1 });
   }
 
@@ -150,9 +174,11 @@ export function runSimulation(cfg: NetworkConfig): RunResult {
     const base = structuredClone(template);
     base.ttl = initialTtl;
     base.corrupted = false;
+    // sentAt is a timestamp the receiver echoes back, so every ACK is an unambiguous RTT sample
+    const sentAt = engine.now;
     if (base.size <= mtu) {
       if (isRetransmit) base.id = pktId++;
-      base.meta = { txId, fragIndex: 0, fragCount: 1 };
+      base.meta = { txId, fragIndex: 0, fragCount: 1, sentAt };
       return [base];
     }
     const n = Math.ceil(base.size / (mtu - FRAG_HEADER_BYTES));
@@ -164,7 +190,7 @@ export function runSimulation(cfg: NetworkConfig): RunResult {
       frag.id = i === 0 && !isRetransmit ? base.id : pktId++;
       frag.payload = base.payload.slice(i * payChunk, (i + 1) * payChunk);
       frag.size = Math.min(sizeChunk, base.size - i * sizeChunk) + FRAG_HEADER_BYTES;
-      frag.meta = { txId, fragIndex: i, fragCount: n };
+      frag.meta = { txId, fragIndex: i, fragCount: n, sentAt };
       units.push(frag);
     }
     return units;
@@ -180,12 +206,40 @@ export function runSimulation(cfg: NetworkConfig): RunResult {
         sentAt: engine.now,
         attempt,
         retransmitted: isRetransmit || !!prev?.retransmitted,
+        laterAcks: 0,
       });
-      engine.schedule(timeoutMs, { kind: 'TIMER_FIRE', data: { flowId: st.flow.id, seq: template.seq, attempt } });
+      engine.schedule(st.rto, { kind: 'TIMER_FIRE', data: { flowId: st.flow.id, seq: template.seq, attempt } });
     }
     for (const unit of toWireUnits(template, isRetransmit)) {
       engine.schedule(e2eDelay, { kind: 'NODE_ARRIVE', nodeId: st.flow.src, packet: unit, data: { injected: true } });
     }
+  };
+
+  /** Multiplicative decrease, at most once per window of data so one burst of loss halves once. */
+  const backOff = (st: SenderState, o: Outstanding, timedOut: boolean) => {
+    if (o.sentAt < st.lastDecreaseAt) return;
+    if (slowStart) {
+      // TCP Reno: remember half the window; a timeout restarts from 1, a fast retransmit resumes at half
+      st.ssthresh = Math.max(2, st.cwnd / 2);
+      st.cwnd = timedOut ? 1 : st.ssthresh;
+    } else {
+      st.cwnd = Math.max(1, st.cwnd / 2);
+    }
+    st.lastDecreaseAt = engine.now;
+    emitCwnd(st);
+  };
+
+  /** RFC 6298: smoothed RTT + 4 × variation, floored at RTO_MIN_MS. */
+  const sampleRtt = (st: SenderState, r: number) => {
+    if (!adaptiveRto) return;
+    if (st.srtt === undefined || st.rttvar === undefined) {
+      st.srtt = r;
+      st.rttvar = r / 2;
+    } else {
+      st.rttvar = 0.75 * st.rttvar + 0.25 * Math.abs(st.srtt - r);
+      st.srtt = 0.875 * st.srtt + 0.125 * r;
+    }
+    st.rto = Math.min(RTO_MAX_MS, Math.max(RTO_MIN_MS, st.srtt + 4 * st.rttvar));
   };
 
   const pump = (st: SenderState) => {
@@ -233,24 +287,39 @@ export function runSimulation(cfg: NetworkConfig): RunResult {
   const receiveAck = (ack: Packet) => {
     const st = senders.get(ack.flowId);
     if (!st || ack.corrupted) return; // a corrupted ACK is unreadable — treat as lost
+    if (typeof ack.meta.echo === 'number') sampleRtt(st, engine.now - ack.meta.echo);
 
     // cumulative part covers earlier ACKs that were lost on the way back
     const acked: number[] = [];
     for (const seq of st.outstanding.keys()) {
       if (seq === ack.ackFor || seq <= (ack.cumAck ?? -1)) acked.push(seq);
     }
+    let newestSentAt = -Infinity;
     for (const seq of acked) {
       const o = st.outstanding.get(seq)!;
       if (seq === ack.ackFor && !o.retransmitted) {
         engine.emitMetric({ time: engine.now, flowId: ack.flowId, kind: 'rtt', value: engine.now - o.sentAt });
       }
+      newestSentAt = Math.max(newestSentAt, o.sentAt);
       st.outstanding.delete(seq);
-      st.cwnd = Math.min(maxWindow, st.cwnd + 1 / st.cwnd); // additive increase: ~+1 per round trip
+      // slow start: +1 per ACK (doubles per round trip); congestion avoidance: ~+1 per round trip
+      st.cwnd = Math.min(maxWindow, st.cwnd + (slowStart && st.cwnd < st.ssthresh ? 1 : 1 / st.cwnd));
     }
-    if (acked.length > 0) {
-      emitCwnd(st);
-      pump(st);
+    if (acked.length === 0) return;
+
+    // fast retransmit: a packet that later packets overtook THRESHOLD times is presumed lost
+    if (fastRetransmit) {
+      for (const o of [...st.outstanding.values()]) {
+        if (o.sentAt >= newestSentAt) continue;
+        if (++o.laterAcks < FAST_RETRANSMIT_THRESHOLD) continue;
+        if (!inOrder && o.attempt > MAX_RETRIES) continue;
+        backOff(st, o, false);
+        engine.emitMetric({ time: engine.now, flowId: ack.flowId, kind: 'retransmit', value: FAST_RETRANSMIT });
+        transmit(st, o.template, true);
+      }
     }
+    emitCwnd(st);
+    pump(st);
   };
 
   /** Hand one packet up to the application, classifying what the app actually got. */
@@ -323,7 +392,7 @@ export function runSimulation(cfg: NetworkConfig): RunResult {
         isAck: true,
         ackFor: cur.seq,
         cumAck: rx.nextExpected - 1,
-        meta: {},
+        meta: { echo: cur.meta.sentAt },
       };
       engine.schedule(0, { kind: 'NODE_ARRIVE', nodeId: cur.dstNode, packet: ack, data: { injected: true } });
     }
@@ -345,7 +414,7 @@ export function runSimulation(cfg: NetworkConfig): RunResult {
     whole.payload = parts.map((p) => p.payload).join('');
     whole.size = parts.reduce((s, p) => s + p.size - FRAG_HEADER_BYTES, 0);
     whole.corrupted = parts.some((p) => p.corrupted);
-    whole.meta = {};
+    whole.meta = { sentAt: parts[0].meta.sentAt };
     return whole;
   };
 
@@ -376,7 +445,7 @@ export function runSimulation(cfg: NetworkConfig): RunResult {
     }
 
     // forward via routing next-hop
-    const nh = routing.nextHop[at]?.[pkt.dstNode] ?? null;
+    const nh = live.nextHop[at]?.[pkt.dstNode] ?? null;
     if (nh === null) {
       dataDrop(pkt, at);
       return;
@@ -465,12 +534,8 @@ export function runSimulation(cfg: NetworkConfig): RunResult {
     const o = st.outstanding.get(seq);
     if (!o || o.attempt !== attempt) return; // already ACKed, or a newer copy owns the timer
 
-    // multiplicative decrease, at most once per window of data so one burst of loss halves once
-    if (o.sentAt >= st.lastDecreaseAt) {
-      st.cwnd = Math.max(1, st.cwnd / 2);
-      st.lastDecreaseAt = engine.now;
-      emitCwnd(st);
-    }
+    backOff(st, o, true);
+    if (adaptiveRto) st.rto = Math.min(RTO_MAX_MS, st.rto * 2); // exponential backoff until a fresh RTT sample
 
     // an in-order stream can never skip a packet, so it keeps trying for the whole run
     if (rtxLayer && (inOrder || o.attempt <= MAX_RETRIES)) {
@@ -489,12 +554,36 @@ export function runSimulation(cfg: NetworkConfig): RunResult {
       }
       return;
     }
-    // scheduled topology fault
-    const linkId = e.linkId!;
-    const link = linkMap.get(linkId);
-    if (link) {
-      link.up = e.data!.action === 'restore';
-      routing = computeRouting(); // recompute after topology change
+    // scheduled topology fault: the link changes now, the routers find out over time
+    const link = linkMap.get(e.linkId!);
+    if (!link) return;
+    link.up = e.data!.action === 'restore';
+    const epoch = ++routingEpoch;
+    const links = [...linkMap.values()];
+    if (cfg.routing === 'ls') {
+      // the routers at both ends flood an LSA; each router recomputes when it arrives
+      const target = linkState(cfg.nodes, links);
+      const fromA = latencyFrom(link.a, cfg.nodes, links);
+      const fromB = latencyFrom(link.b, cfg.nodes, links);
+      for (const r of cfg.nodes) {
+        const t = Math.min(fromA[r], fromB[r]);
+        if (Number.isFinite(t)) engine.schedule(t, { kind: 'ROUTING_TICK', data: { epoch, router: r, tables: target } });
+      }
+    } else {
+      // every router re-runs Bellman-Ford from its current (now partly stale) vector, one round per period
+      const res = distanceVector(cfg.nodes, links, live);
+      res.history!.forEach((tables, k) => {
+        engine.schedule(k * roundMs, { kind: 'ROUTING_TICK', data: { epoch, tables } });
+      });
+    }
+  };
+
+  engine.handlers.ROUTING_TICK = (e) => {
+    const { epoch, router, tables } = e.data as { epoch: number; router?: string; tables: RoutingTables };
+    if (epoch !== routingEpoch) return;
+    for (const r of router ? [router] : cfg.nodes) {
+      live.nextHop[r] = { ...tables.nextHop[r] };
+      live.dist[r] = { ...tables.dist[r] };
     }
   };
 
@@ -515,7 +604,7 @@ export function runSimulation(cfg: NetworkConfig): RunResult {
 
   engine.run(cfg.durationMs);
 
-  return { metrics, routingResult: routing, moves };
+  return { metrics, routingResult: computeRouting(), moves };
 }
 
 /** Flip one character of the payload — real bit damage a checksum can catch. */

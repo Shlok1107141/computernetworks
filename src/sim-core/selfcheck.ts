@@ -7,7 +7,7 @@
 // ============================================================
 
 import { runSimulation, type NetworkConfig } from './network';
-import { defaultTopology, reliableStack, unreliableStack } from './presets';
+import { defaultTopology, reliableStack, tcpLikeStack, unreliableStack } from './presets';
 import { distanceVector, linkState } from './routing';
 import { checksum, makeLayer, type LayerDef, type LayerScope, type Primitive } from './layer';
 import { compareStacks } from './comparison';
@@ -302,6 +302,62 @@ console.log('\n[18] Link queues: bandwidth limits throughput, a full queue tail-
   assert(big.avgRttMs > fast.avgRttMs * 2, `queueing delay shows up in latency (${big.avgRttMs.toFixed(0)}ms vs ${fast.avgRttMs.toFixed(0)}ms)`);
 }
 
+console.log('\n[19] Routing re-convergence: Link State floods at link speed, Distance Vector loops while it catches up');
+{
+  const { nodes, links } = defaultTopology();
+  const dv0 = distanceVector(nodes, links);
+  const re = distanceVector(nodes, links.map((l) => (l.id === 'R3-R4' ? { ...l, up: false } : l)), dv0);
+  const looped = re.history!.some((h) => h.nextHop['R3']['R6'] === 'R2' && h.nextHop['R2']['R6'] === 'R3');
+  assert(looped, `DV re-convergence passes through an R2 ⇄ R3 loop (${re.rounds} rounds)`);
+  const run = (routing: 'ls' | 'dv') => runSimulation({
+    nodes, links: links.map((l) => ({ ...l, lossPct: 0, corruptPct: 0 })), stack: unreliableStack(),
+    flows: [{ id: 'f1', src: 'R1', dst: 'R6', ratePps: 50, count: 150, payloadBytes: 512 }],
+    faults: [{ atMs: 1000, linkId: 'R3-R4', action: 'kill' }], routing, seed: 3, durationMs: 8000,
+  });
+  const ls = run('ls'), dv = run('dv');
+  const bounces = (r: typeof ls) => r.moves.filter((m) => m.fromNode === 'R3' && m.toNode === 'R2').length;
+  const lsS = ls.metrics.summarize(['f1'])[0], dvS = dv.metrics.summarize(['f1'])[0];
+  assert(bounces(ls) === 0 && bounces(dv) > 0, `only DV bounces packets back R3 → R2 during convergence (LS ${bounces(ls)}, DV ${bounces(dv)})`);
+  assert(dvS.delivered < lsS.delivered, `DV loses packets during convergence that LS does not (${dvS.delivered} vs ${lsS.delivered} delivered)`);
+}
+
+console.log('\n[20] Adaptive timeout and fast retransmit (TCP-like) — and what they cost');
+{
+  const { nodes, links } = defaultTopology();
+  const flow = [{ id: 'f1', src: 'R1', dst: 'R6', ratePps: 20, count: 60, payloadBytes: 512 }];
+  const lossy = { nodes, links: links.map((l) => ({ ...l, lossPct: 8, corruptPct: 0 })), flows: flow, faults: [], routing: 'ls' as const, seed: 31, durationMs: 8000 };
+  const slowTimer = (rto: string, fast: string) => reliableStack().map((l) => l.name !== 'Transport' ? l : {
+    ...l, timeoutMs: 3000, primitives: l.primitives.map((p) => p.kind === 'RETRANSMIT' ? { ...p, params: { rto, fast } } : p),
+  });
+  const fixed = summary({ ...lossy, stack: slowTimer('fixed', 'off') });
+  const adaptive = summary({ ...lossy, stack: slowTimer('adaptive', 'off') });
+  assert(adaptive.deliveryRate > fixed.deliveryRate, `adaptive timeout learns the ~100 ms RTT instead of waiting 3000 ms (${(adaptive.deliveryRate*100).toFixed(0)}% vs ${(fixed.deliveryRate*100).toFixed(0)}%)`);
+
+  // fast retransmit needs packets close together (bulk traffic), averaged over seeds
+  const withFast = (fast: string) => tcpLikeStack().map((l) => l.name !== 'Transport' ? l : {
+    ...l, primitives: l.primitives.map((p) => p.kind === 'RETRANSMIT' ? { ...p, params: { ...p.params, fast } } : p),
+  });
+  const bulk = { ...lossy, links: links.map((l) => ({ ...l, lossPct: 3, corruptPct: 0 })), flows: [{ id: 'f1', src: 'R1', dst: 'R6', ratePps: 200, count: 400, payloadBytes: 512 }] };
+  const total = (fast: string) => {
+    let fastRtx = 0, timeouts = 0;
+    for (let seed = 1; seed <= 6; seed++) {
+      const s = summary({ ...bulk, seed, stack: withFast(fast) });
+      fastRtx += s.fastRetransmits; timeouts += s.retransmits - s.fastRetransmits;
+    }
+    return { fastRtx, timeouts };
+  };
+  const on = total('on'), off = total('off');
+  assert(on.fastRtx > 0 && off.fastRtx === 0, `bulk traffic: fast retransmit fires on later ACKs (${on.fastRtx} over 6 runs)`);
+  assert(on.timeouts < off.timeouts, `so fewer losses wait for the timer (${on.timeouts} vs ${off.timeouts} timeouts)`);
+
+  const congested = { nodes, links: links.map((l) => (l.id === 'R3-R4' ? { ...l, bandwidthMbps: 1, queueSize: 2 } : l)), flows: [{ id: 'f1', src: 'R1', dst: 'R6', ratePps: 300, count: 300, payloadBytes: 1024 }], faults: [], routing: 'ls' as const, seed: 42, durationMs: 8000 };
+  const tcpC = summary({ ...congested, stack: tcpLikeStack() }), relC = summary({ ...congested, stack: reliableStack() });
+  assert(tcpC.deliveryRate > relC.deliveryRate, `under congestion TCP-like beats classic reliable (${(tcpC.deliveryRate*100).toFixed(0)}% vs ${(relC.deliveryRate*100).toFixed(0)}%)`);
+
+  const heavy = { ...lossy, links: links.map((l) => ({ ...l, lossPct: 20, corruptPct: 0 })), seed: 123 };
+  const tcpH = summary({ ...heavy, stack: tcpLikeStack() }), relH = summary({ ...heavy, stack: reliableStack() });
+  assert(tcpH.deliveryRate < relH.deliveryRate, `under heavy random loss, backing off as if congested hurts TCP-like (${(tcpH.deliveryRate*100).toFixed(0)}% vs ${(relH.deliveryRate*100).toFixed(0)}%)`);
+}
 
 console.log(`\n${failures === 0 ? '✅ ALL CHECKS PASSED' : '❌ ' + failures + ' CHECK(S) FAILED'}\n`);
 process.exit(failures === 0 ? 0 : 1);

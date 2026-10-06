@@ -20,6 +20,9 @@ protocol, no hardware, no server; it's a static website."
 - TCP-like behaviour isn't hard-coded anywhere. It *emerges* from the combination
   `SEQUENCE + CHECKSUM + ACK + RETRANSMIT + WINDOW`. Remove one and you see exactly what
   that block was buying you.
+- Blocks have settings too. RETRANSMIT can use a fixed or a learned (adaptive) timeout, and
+  can resend early (fast retransmit). WINDOW can grow with slow start. Turning those on
+  gives the **TCP-like** preset, so you can watch how TCP's refinements pay off.
 - Each layer also has a **scope**:
   - **End-to-end:** runs once at the sender and once at the receiver, like TCP.
   - **Every hop:** re-checked at every router, like IP.
@@ -54,9 +57,12 @@ before → after."
 | Where layers run | Endpoints only | Each layer: end-to-end or every hop |
 | Link queues | Queue size knob did nothing | Real queues: limited bandwidth causes queueing delay and overflow drops |
 | Building a protocol | Read-only chips | Full editor: add, reorder, remove and configure primitives |
+| TCP refinements | — | Adaptive timeout, fast retransmit, slow start; a TCP-like preset |
+| Routing after a failure | Instant, DV and LS identical | LS reroutes as the news floods; DV catches up round by round and can loop |
+| Traffic | One flow | Several flows at once, each with its own colour |
 | Metrics | 6 | 11, including corruption caught vs missed, duplicates, out of order, retransmits |
-| Other UI | — | Run-duration knob, choose flow endpoints, router routing tables |
-| Tests | 9 groups | 18 groups, run automatically on every push |
+| Other UI | — | Run-duration knob, router tables with DV round-by-round view, loss-sweep chart, draggable routers |
+| Tests | 9 groups | 20 groups, run automatically on every push |
 | Hosting | — | Publishes to GitHub Pages automatically |
 
 "Every knob on the page now changes the simulation. Nothing is decorative."

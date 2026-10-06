@@ -1,14 +1,18 @@
+import { lazy, Suspense } from 'react';
 import { useSim } from './store/simStore';
 import { TopologyView } from './ui/TopologyView';
 import { StackBuilder } from './ui/StackBuilder';
 import { Inspector } from './ui/Inspector';
-import { Dashboard } from './ui/Dashboard';
-import { Comparison } from './ui/Comparison';
 import { FaultTimeline } from './ui/FaultTimeline';
 import './index.css';
 
+// the chart panels pull in recharts; loading them separately keeps the first bundle small
+const Dashboard = lazy(() => import('./ui/Dashboard').then((m) => ({ default: m.Dashboard })));
+const Comparison = lazy(() => import('./ui/Comparison').then((m) => ({ default: m.Comparison })));
+const loading = <div style={{ color: 'var(--muted)', fontSize: 13 }}>Loading charts…</div>;
+
 export default function App() {
-  const { run, routing, setRouting, seed, setSeed, durationMs, setDurationMs, flows, setSelected } = useSim();
+  const { run, routing, setRouting, routingRoundMs, setRoutingRoundMs, seed, setSeed, durationMs, setDurationMs, flows, setSelected } = useSim();
 
   return (
     <div className="wrap">
@@ -27,6 +31,13 @@ export default function App() {
           <button className={routing === 'dv' ? 'on' : ''} onClick={() => setRouting('dv')}>Distance Vector</button>
           <button className={routing === 'ls' ? 'on' : ''} onClick={() => setRouting('ls')}>Link State</button>
         </div>
+        {routing === 'dv' && (
+          <label className="seed" title="After a link change, Distance Vector routers exchange tables once per period until they agree">
+            DV update every
+            <input type="number" min={10} max={2000} step={10} value={routingRoundMs}
+              onChange={(e) => setRoutingRoundMs(+e.target.value)} /> ms
+          </label>
+        )}
         <label className="seed">seed
           <input type="number" value={seed} onChange={(e) => setSeed(+e.target.value)} />
         </label>
@@ -48,7 +59,7 @@ export default function App() {
 
         <section className="panel col-net">
           <h2>Network</h2>
-          <div className="sub">Click a link or node to inspect. Replay shows real event timings.</div>
+          <div className="sub">Click a link or router to inspect; drag routers to rearrange. Replay shows real event timings.</div>
           <TopologyView />
         </section>
 
@@ -63,7 +74,7 @@ export default function App() {
         <section className="panel">
           <h2>Dashboard</h2>
           <div className="sub">Measured metrics from the last run &#8212; reproducible for the same seed.</div>
-          <Dashboard />
+          <Suspense fallback={loading}><Dashboard /></Suspense>
         </section>
 
         <section className="panel">
@@ -76,11 +87,11 @@ export default function App() {
       <section className="panel" style={{ marginTop: 20 }}>
         <h2>A/B Stack Comparison</h2>
         <div className="sub">The core experiment: two stacks, identical traffic and seed &#8212; the only variable is the protocol.</div>
-        <Comparison />
+        <Suspense fallback={loading}><Comparison /></Suspense>
       </section>
 
       <div className="footer-note">
-        Phase-4 &#183; discrete-event core, per-hop &amp; end-to-end layers, all 9 primitives live, ACK + retransmit + AIMD window, link queues, A/B harness, fault timeline &#183; 18/18 self-check groups pass
+        Phase-5 &#183; discrete-event core, per-hop &amp; end-to-end layers, all 9 primitives live, reliability with slow start, adaptive timeout &amp; fast retransmit, DV vs LS convergence, link queues, multiple flows, A/B harness + loss sweep &#183; 20/20 self-check groups pass
       </div>
     </div>
   );

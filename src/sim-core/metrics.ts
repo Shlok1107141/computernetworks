@@ -17,6 +17,7 @@ export interface FlowSummary {
   duplicates: number;        // extra copies passed to the application
   reordered: number;         // passed to the application out of order
   retransmits: number;
+  fastRetransmits: number;   // the subset triggered by later ACKs rather than the timer
   deliveryRate: number;      // delivered / sent
   avgRttMs: number;
   goodputBps: number;        // delivered bytes over sim duration
@@ -62,6 +63,7 @@ export class Metrics {
         duplicates: this.count(flowId, 'duplicate'),
         reordered: this.count(flowId, 'reordered'),
         retransmits,
+        fastRetransmits: this.samples.filter((s) => s.flowId === flowId && s.kind === 'retransmit' && s.value === 2).length,
         deliveryRate: sent ? delivered / sent : 0,
         avgRttMs: avgRtt,
         goodputBps: (bytes * 8) / durationSec,

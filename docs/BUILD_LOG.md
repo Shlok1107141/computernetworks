@@ -120,3 +120,38 @@ in-flight data, Window/Timeout knobs change outcomes). [8] now asserts a strict 
 
 **Validation:** `npm test` → 18/18 groups ([13] checksum, [14] sequence, [15] fragment,
 [16] scope, [17] delay, [18] queues are new).
+
+---
+
+## Phase 5 — Feature complete (2026-10-06)
+
+**What shipped:**
+- **Routing re-convergence.** Faults no longer re-route instantly. Link State: each router
+  recomputes when the LSA from either end of the changed link reaches it (shortest
+  link-latency path). Distance Vector: synchronous Bellman-Ford rounds starting from the
+  routers' current (stale) vectors, one round per `routingRoundMs` (default 100 ms,
+  UI knob when DV is selected). Stale DV tables can loop packets (R2 ⇄ R3 after R3-R4
+  fails) until convergence; TTL ends the loop. `distanceVector()` now returns per-round
+  `history`; the router Inspector steps through it.
+- **TCP refinements (opt-in, defaults unchanged):** `RETRANSMIT {rto:'adaptive'}` —
+  RFC 6298 SRTT/RTTVAR, 200 ms floor, exponential backoff, samples from a timestamp the
+  ACK echoes (so retransmissions still yield samples, as with TCP timestamps);
+  `RETRANSMIT {fast:'on'}` — resend after 3 later packets are ACKed; `WINDOW
+  {growth:'slow-start'}` — +1 per ACK below ssthresh, Reno-style halving on fast
+  retransmit, reset to 1 on timeout. `tcpLikeStack()` preset combines them (window 16).
+- UI: TCP-like preset; multiple flows (+ Add flow, remove, per-flow colours in replay, log,
+  Dashboard cards + All flows total, chart selector); "TCP-like vs reliable" comparison;
+  aggregated comparison columns; loss-sweep chart (4 stacks × 0–30% loss); draggable
+  routers; links turn red during replay when a scheduled fault fires; latency labelled
+  one-way for stacks without ACK; retransmits show how many were fast.
+- Dashboard and replay read `lastConfig` (the run's own config), not live edits.
+- Chart panels lazy-loaded (first bundle 588 KB → 242 KB); TopologyView lint warning fixed.
+
+**Findings:** under congestion TCP-like delivers 86% vs 55% (classic) vs 38% (unreliable);
+under heavy random loss TCP-like collapses (it reads loss as congestion and backs off) —
+the classic TCP-over-lossy-links problem. After a link failure DV loses more packets
+than LS (89% vs 94% at defaults, 50 pkt/s) because of transient loops.
+
+**Validation:** `npm test` → 20/20 groups ([19] routing re-convergence, [20] adaptive
+timeout, fast retransmit, congestion vs heavy-loss trade-off are new). All numbers in
+the presentation scripts and guide re-verified unchanged.

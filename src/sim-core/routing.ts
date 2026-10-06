@@ -7,12 +7,19 @@
 
 import type { LinkDef } from './link';
 
-export interface RoutingResult {
+export interface RoutingTables {
   // nextHop[from][to] = neighbor to forward to, or null if unreachable
   nextHop: Record<string, Record<string, string | null>>;
   dist: Record<string, Record<string, number>>;
-  rounds: number;       // DV: relaxation rounds. LS: flooding hop-diameter.
 }
+
+export interface RoutingResult extends RoutingTables {
+  rounds: number;       // DV: exchange rounds until stable. LS: flooding hop-diameter.
+  history?: RoutingTables[]; // DV: the tables after each round (last = converged)
+}
+
+/** Costs at or above this count as unreachable (RIP's "16 = infinity", scaled for weights up to 20). */
+export const DV_INFINITY = 128;
 
 function neighbors(links: LinkDef[]): Record<string, { node: string; w: number }[]> {
   const adj: Record<string, { node: string; w: number }[]> = {};
@@ -24,43 +31,50 @@ function neighbors(links: LinkDef[]): Record<string, { node: string; w: number }
   return adj;
 }
 
-export function distanceVector(nodes: string[], links: LinkDef[]): RoutingResult {
+/**
+ * Synchronous distributed Bellman-Ford: in each round every router rebuilds
+ * its vector purely from what its neighbours advertised in the previous round.
+ * Starting from `from` (the tables before a topology change) reproduces real
+ * re-convergence, including transient loops and count-to-infinity.
+ */
+export function distanceVector(nodes: string[], links: LinkDef[], from?: RoutingTables): RoutingResult {
   const adj = neighbors(links);
-  const dist: Record<string, Record<string, number>> = {};
-  const nextHop: Record<string, Record<string, string | null>> = {};
-
+  let dist: Record<string, Record<string, number>> = {};
   for (const a of nodes) {
     dist[a] = {};
-    nextHop[a] = {};
-    for (const b of nodes) {
-      dist[a][b] = a === b ? 0 : Infinity;
-      nextHop[a][b] = null;
-    }
-    for (const nb of adj[a] || []) {
-      dist[a][nb.node] = nb.w;
-      nextHop[a][nb.node] = nb.node;
-    }
+    for (const b of nodes) dist[a][b] = a === b ? 0 : from ? Math.min(from.dist[a]?.[b] ?? Infinity, DV_INFINITY) : Infinity;
   }
 
-  let rounds = 0;
-  let changed = true;
-  while (changed && rounds < nodes.length + 5) {
-    changed = false;
-    rounds++;
+  const history: RoutingTables[] = [];
+  const limit = 4 * DV_INFINITY;
+  for (let round = 1; round <= limit; round++) {
+    const next: Record<string, Record<string, number>> = {};
+    const nextHop: Record<string, Record<string, string | null>> = {};
+    let changed = false;
     for (const v of nodes) {
-      for (const nb of adj[v] || []) {
-        for (const dest of nodes) {
-          const via = (adj[v]!.find((n) => n.node === nb.node)!.w) + dist[nb.node][dest];
-          if (via < dist[v][dest]) {
-            dist[v][dest] = via;
-            nextHop[v][dest] = nb.node;
-            changed = true;
+      next[v] = {};
+      nextHop[v] = {};
+      for (const dest of nodes) {
+        let best = v === dest ? 0 : Infinity;
+        let hop: string | null = v === dest ? v : null;
+        if (v !== dest) {
+          for (const nb of adj[v] || []) {
+            const via = nb.w + dist[nb.node][dest];
+            if (via < best) { best = via; hop = nb.node; }
           }
         }
+        if (best >= DV_INFINITY) { best = Infinity; hop = null; }
+        next[v][dest] = best;
+        nextHop[v][dest] = hop;
+        if (best !== dist[v][dest]) changed = true;
       }
     }
+    dist = next;
+    history.push({ dist: next, nextHop });
+    if (!changed) break;
   }
-  return { nextHop, dist, rounds };
+  const last = history[history.length - 1];
+  return { nextHop: last.nextHop, dist: last.dist, rounds: history.length, history };
 }
 
 export function linkState(nodes: string[], links: LinkDef[]): RoutingResult {
@@ -135,4 +149,24 @@ export function linkState(nodes: string[], links: LinkDef[]): RoutingResult {
   }
 
   return { nextHop, dist, rounds: diameter };
+}
+
+/** Shortest propagation time (sum of link latencies) from `src` to every router over live links. */
+export function latencyFrom(src: string, nodes: string[], links: LinkDef[]): Record<string, number> {
+  const t: Record<string, number> = {};
+  for (const n of nodes) t[n] = Infinity;
+  t[src] = 0;
+  const done = new Set<string>();
+  while (done.size < nodes.length) {
+    let u: string | null = null;
+    for (const n of nodes) if (!done.has(n) && (u === null || t[n] < t[u])) u = n;
+    if (u === null || t[u] === Infinity) break;
+    done.add(u);
+    for (const l of links) {
+      if (!l.up || (l.a !== u && l.b !== u)) continue;
+      const v = l.a === u ? l.b : l.a;
+      t[v] = Math.min(t[v], t[u] + l.latencyMs);
+    }
+  }
+  return t;
 }

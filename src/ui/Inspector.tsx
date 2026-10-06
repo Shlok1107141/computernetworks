@@ -8,6 +8,7 @@
 import { useState } from 'react';
 import { useSim } from '../store/simStore';
 import { DEFAULT_DELAY_MS, PRIMITIVE_KINDS, reliabilityLayers, type LayerDef, type Primitive, type PrimitiveKind } from '../sim-core/layer';
+import type { RoutingResult } from '../sim-core/routing';
 
 function Knob({ label, value, min, max, step, unit, hint, onChange }: {
   label: string; value: number; min: number; max: number; step: number; unit?: string;
@@ -32,8 +33,8 @@ const PRIMITIVE_HELP: Record<PrimitiveKind, string> = {
   CHECKSUM: 'Stamp a checksum of the payload; receiver discards the packet on mismatch',
   SEQUENCE: 'Number packets; receiver drops duplicates (and with RETRANSMIT, delivers in order)',
   ACK: 'Receiver sends an ACK back for every packet it accepts',
-  RETRANSMIT: 'Resend a packet if no ACK arrives within Timeout',
-  WINDOW: 'Cap unACKed packets by an AIMD window, up to Window size',
+  RETRANSMIT: 'Resend a packet if no ACK arrives within Timeout; optionally learn the timeout and resend early',
+  WINDOW: 'Cap unACKed packets by a congestion window (AIMD, optionally slow start), up to Window size',
   DROP_IF: 'Drop the packet when the condition holds (per-hop: checked at every router)',
   DELAY: 'Add processing time before sending (per-hop: at every router)',
   FRAGMENT: 'Split packets bigger than MTU; receiver reassembles, one lost piece loses all',
@@ -89,7 +90,41 @@ function PrimitiveEditor({ layer, stack }: { layer: LayerDef; stack: LayerDef[] 
   );
 }
 
+function Choice({ label, value, options, onChange }: {
+  label: string; value: string; options: [string, string][]; onChange: (v: string) => void;
+}) {
+  return (
+    <>
+      <span style={{ fontSize: 11, color: 'var(--muted)' }}>{label}</span>
+      <select value={value} onChange={(e) => onChange(e.target.value)}>
+        {options.map(([v, text]) => <option key={v} value={v}>{text}</option>)}
+      </select>
+    </>
+  );
+}
+
 function PrimitiveParams({ p, onChange }: { p: Primitive; onChange: (params: Primitive['params']) => void }) {
+  if (p.kind === 'RETRANSMIT') {
+    return (
+      <div className="row" style={{ marginTop: 6, gap: 4 }}>
+        <Choice label="timeout" value={String(p.params.rto ?? 'fixed')}
+          options={[['fixed', 'fixed'], ['adaptive', 'adaptive (learns RTT)']]}
+          onChange={(rto) => onChange({ ...p.params, rto })} />
+        <Choice label="fast retransmit" value={String(p.params.fast ?? 'off')}
+          options={[['off', 'off'], ['on', 'on (after 3 later ACKs)']]}
+          onChange={(fast) => onChange({ ...p.params, fast })} />
+      </div>
+    );
+  }
+  if (p.kind === 'WINDOW') {
+    return (
+      <div className="row" style={{ marginTop: 6, gap: 4 }}>
+        <Choice label="growth" value={String(p.params.growth ?? 'aimd')}
+          options={[['aimd', 'AIMD only'], ['slow-start', 'slow start, then AIMD']]}
+          onChange={(growth) => onChange({ ...p.params, growth })} />
+      </div>
+    );
+  }
   if (p.kind === 'DELAY') {
     return (
       <div className="row" style={{ marginTop: 6, gap: 4 }}>
@@ -132,7 +167,7 @@ function PrimitiveParams({ p, onChange }: { p: Primitive; onChange: (params: Pri
 }
 
 export function Inspector() {
-  const { selected, nodes, links, stack, flows, routing, liveRouting, updateLink, updateLayer, updateFlow } = useSim();
+  const { selected, nodes, links, stack, flows, routing, liveRouting, updateLink, updateLayer, updateFlow, removeFlow } = useSim();
 
   if (!selected) {
     return <div style={{ color: 'var(--muted)', fontSize: 13 }}>Select a link, layer, or flow to tune its parameters.</div>;
@@ -171,6 +206,7 @@ export function Inspector() {
       : !has('RETRANSMIT') && !has('ACK') ? 'inactive: this layer has no RETRANSMIT primitive'
       : !rel.ack ? 'inactive: add ACK to the stack'
       : 'inactive: another layer\'s timer is in charge';
+    const adaptive = rel.rtx?.primitives.find((p) => p.kind === 'RETRANSMIT')?.params.rto === 'adaptive';
     return (
       <div>
         <h3 style={{ fontSize: 14, marginBottom: 12 }}>{l.name}</h3>
@@ -192,7 +228,7 @@ export function Inspector() {
             : 'Applied once at the source and undone once at the destination, like TCP. Routers never look inside.'}
         </div>
         <Knob label="Window size" value={l.windowSize} min={1} max={32} step={1} unit=" pkts" hint={windowHint} onChange={(v) => updateLayer(l.id, { windowSize: v })} />
-        <Knob label="Timeout" value={l.timeoutMs} min={100} max={3000} step={100} unit=" ms" hint={timeoutHint} onChange={(v) => updateLayer(l.id, { timeoutMs: v })} />
+        <Knob label={adaptive ? 'Timeout (starting value, then learned)' : 'Timeout'} value={l.timeoutMs} min={100} max={3000} step={100} unit=" ms" hint={timeoutHint} onChange={(v) => updateLayer(l.id, { timeoutMs: v })} />
         <Knob label="MTU" value={l.mtu} min={128} max={9000} step={64} unit=" B"
           hint={rel.frag === l ? undefined : has('FRAGMENT') ? 'inactive: a higher layer\'s FRAGMENT is in charge' : 'inactive: this layer has no FRAGMENT primitive'}
           onChange={(v) => updateLayer(l.id, { mtu: v })} />
@@ -223,44 +259,64 @@ export function Inspector() {
         <Knob label="Rate" value={f.ratePps} min={1} max={500} step={1} unit=" pkt/s" onChange={(v) => updateFlow(f.id, { ratePps: v })} />
         <Knob label="Packet count" value={f.count} min={1} max={500} step={1} onChange={(v) => updateFlow(f.id, { count: v })} />
         <Knob label="Payload" value={f.payloadBytes} min={64} max={4096} step={64} unit=" B" onChange={(v) => updateFlow(f.id, { payloadBytes: v })} />
+        {flows.length > 1 && (
+          <button className="btn secondary small" onClick={() => removeFlow(f.id)}>Remove flow {f.id}</button>
+        )}
       </div>
     );
   }
 
   if (selected.type === 'node') {
-    const table = liveRouting();
-    const id = selected.id;
-    return (
-      <div>
-        <h3 style={{ fontSize: 14, marginBottom: 4 }}>Router {id}</h3>
-        <div style={{ fontSize: 11.5, color: 'var(--muted)', marginBottom: 10 }}>
-          Routing table ({routing === 'dv' ? 'Distance Vector' : 'Link State'}, current link state)
-        </div>
-        <table className="mono" style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
-          <thead>
-            <tr style={{ color: 'var(--muted)', textAlign: 'left' }}>
-              <th style={{ fontWeight: 500, paddingBottom: 4 }}>dest</th>
-              <th style={{ fontWeight: 500 }}>next hop</th>
-              <th style={{ fontWeight: 500, textAlign: 'right' }}>cost</th>
-            </tr>
-          </thead>
-          <tbody>
-            {nodes.filter((n) => n !== id).map((n) => {
-              const nh = table.nextHop[id]?.[n];
-              const cost = table.dist[id]?.[n];
-              return (
-                <tr key={n} style={{ borderTop: '1px solid var(--border)' }}>
-                  <td style={{ padding: '4px 0' }}>{n}</td>
-                  <td style={{ color: nh ? 'var(--teal)' : 'var(--red)' }}>{nh ?? 'unreachable'}</td>
-                  <td style={{ textAlign: 'right' }}>{Number.isFinite(cost) ? cost : '∞'}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    );
+    return <RouterView key={`${selected.id}-${routing}`} id={selected.id} nodes={nodes} routing={routing} table={liveRouting()} />;
   }
 
   return null;
+}
+
+/** A router's table; for Distance Vector, step through the exchange rounds that built it. */
+function RouterView({ id, nodes, routing, table }: { id: string; nodes: string[]; routing: 'dv' | 'ls'; table: RoutingResult }) {
+  const rounds = table.history?.length ?? 0;
+  const [round, setRound] = useState(rounds);
+  const shown = routing === 'dv' && table.history ? table.history.at(Math.max(0, round - 1))! : table;
+  return (
+    <div>
+      <h3 style={{ fontSize: 14, marginBottom: 4 }}>Router {id}</h3>
+      <div style={{ fontSize: 11.5, color: 'var(--muted)', marginBottom: 10 }}>
+        {routing === 'dv'
+          ? `Distance Vector: built from neighbours' tables, one exchange per round. Converged in ${rounds} rounds.`
+          : `Link State: every router learns the full map by flooding (${table.rounds} hops across) and runs Dijkstra itself.`}
+      </div>
+      {routing === 'dv' && rounds > 0 && (
+        <div style={{ marginBottom: 10 }}>
+          <label style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--muted)', marginBottom: 3 }}>
+            <span>After exchange round</span>
+            <span className="mono" style={{ color: 'var(--text)' }}>{round} / {rounds}</span>
+          </label>
+          <input type="range" min={1} max={rounds} step={1} value={round} onChange={(e) => setRound(+e.target.value)} style={{ width: '100%' }} />
+        </div>
+      )}
+      <table className="mono" style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+        <thead>
+          <tr style={{ color: 'var(--muted)', textAlign: 'left' }}>
+            <th style={{ fontWeight: 500, paddingBottom: 4 }}>dest</th>
+            <th style={{ fontWeight: 500 }}>next hop</th>
+            <th style={{ fontWeight: 500, textAlign: 'right' }}>cost</th>
+          </tr>
+        </thead>
+        <tbody>
+          {nodes.filter((n) => n !== id).map((n) => {
+            const nh = shown.nextHop[id]?.[n];
+            const cost = shown.dist[id]?.[n];
+            return (
+              <tr key={n} style={{ borderTop: '1px solid var(--border)' }}>
+                <td style={{ padding: '4px 0' }}>{n}</td>
+                <td style={{ color: nh ? 'var(--teal)' : 'var(--red)' }}>{nh ?? 'not known yet'}</td>
+                <td style={{ textAlign: 'right' }}>{Number.isFinite(cost) ? cost : '∞'}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
 }

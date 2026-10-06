@@ -79,15 +79,35 @@ what the results mean and what's next.
    - Reliable: **9 drops**, 55%, and a sawtooth in the window chart.
    > "The window backs off when the link overflows. That's congestion control in
    > action."
+4. Same setup, click **TCP-like vs reliable**: TCP-like **86%** vs reliable **55%**. Its
+   retransmits show how many were *fast*.
+   > "Real TCP learns the round-trip time, resends early when later packets get through,
+   > and ramps up with slow start. Same building blocks, better settings."
 
-## Demo 8: Failure and reproducibility (30 s)
+## Demo 8: Failure, routing and reproducibility (1 min)
 
 1. F5. In **Fault Timeline**: link **R3-R4**, **kill**, **@ 1000 ms**, **Add**. **Run** →
-   still 100%. Replay: before t = 1.0 s packets go R2 → R3 → R4; after it they switch to
-   R2 → R4 → R6.
-2. Click **Save scenario**.
+   still 100%. Replay: R3–R4 turns red at t = 1.0 s, and packets switch from
+   R2 → R3 → R4 to R2 → R4 → R6.
+2. *Distance Vector vs Link State:* click **Unreliable preset**, **Tune flow** → Rate **50**,
+   Packet count **150**. **Run** with **Link State** → **94%**. Switch to **Distance Vector**,
+   **Run** → **89%**.
+   > "Link State routers hear about the failure almost instantly. Distance Vector routers
+   > trade stale tables for a few rounds, and packets bounce between R2 and R3 until they
+   > agree. Replay it after t = 1 s and you'll see the bounce."
+3. Click router **R3** (Distance Vector selected) and drag the **exchange round** slider
+   from 1 to 5. Watch R3 learn the network one round at a time.
+4. Click **Save scenario**.
    > "This file plus the seed reproduces this exact run on any machine, including the
    > hosted site."
+
+## Optional extras (if time allows)
+
+- **+ Add flow** under the graph: two flows share the links, each with its own colour.
+  The Dashboard shows each flow plus an "All flows" total.
+- **Loss sweep 0–30%** at the bottom: one chart of four stacks as loss rises. The TCP-like
+  line falls fastest under heavy random loss, because it treats every loss as congestion.
+- Drag any router to rearrange the graph.
 
 **Handoff:** "So every block does a real job. [P3] will show how we know these numbers are
 right, what they taught us, and what's next."

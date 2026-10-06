@@ -3,7 +3,7 @@
 > Update this at the end of every work session. "What's done, what's next,
 > what's blocked." Keep it honest — it's how three people avoid colliding.
 
-_Last updated: end of Phase 4 (2026-10-06)_
+_Last updated: end of Phase 5 — feature complete (2026-10-06)_
 
 ## ✅ Done
 
@@ -27,16 +27,24 @@ _Last updated: end of Phase 4 (2026-10-06)_
 - UI: run-duration knob, flow endpoints, router routing tables, scope toggle, DELAY param.
 - `npm test`, GitHub Pages workflow, relative build paths.
 
-**Validation:** `npm test` → 18/18 groups pass. `npm run build` clean, `tsc -b` clean.
-Every knob in the UI now changes the simulation.
+**Phase 5 — feature complete**
+- Routing convergence after faults: Link State routers switch as the LSA reaches them (link
+  latency); Distance Vector re-converges from stale tables one exchange per period, with
+  transient loops. DV vs LS now give different results; DV rounds can be stepped per router.
+- TCP refinements as opt-in settings: adaptive timeout (RFC 6298 + timestamp echo, 200 ms
+  floor, backoff), fast retransmit, slow start (Reno). New TCP-like preset.
+- Multiple flows in the UI with per-flow colours; Dashboard totals; loss-sweep chart;
+  draggable routers; replay shows scheduled faults; latency label honest without ACKs.
+- Bundle split (first load 242 KB), lint clean.
 
-## 🔭 Possible extensions (not required for the core idea)
+**Validation:** `npm test` → 20/20 groups pass. `npm run build` clean, `tsc -b` clean,
+`oxlint` clean. Every knob in the UI changes the simulation.
+
+## 🔭 Possible extensions (beyond the project's scope)
 
 | Item | Notes |
 |---|---|
-| Fast retransmit / adaptive RTO | Reliable becomes throughput-bound at ≥10% per-link loss in short runs — a real trade-off worth studying, and the obvious next protocol refinement. |
-| DV round-by-round animation | DV jumps to converged; animating rounds would show DV vs LS convergence visually. |
-| Multiple flows in the UI | Engine supports many flows; UI edits only `f1`. |
-| Loss-sweep chart in the UI | `validation.ts` exists; only reachable from `npm test`. |
-| Node drag-to-reposition | Positions fixed. |
-| Code-split the bundle | Build warns about a ~590 KB chunk (recharts). Cosmetic. |
+| Editable topology | Add/remove routers and links in the UI (the engine already takes any graph). |
+| Fast recovery / SACK-based recovery | Reno's window inflation; would further help TCP-like on lossy links. |
+| Fairness metrics | Jain's fairness index across competing flows. |
+| Count-to-infinity mitigations | Split horizon / poison reverse for Distance Vector. |

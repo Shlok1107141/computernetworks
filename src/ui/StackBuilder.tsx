@@ -8,12 +8,13 @@
 import { useSim } from '../store/simStore';
 
 export function StackBuilder() {
-  const { stack, selected, setSelected, reorderLayer, removeLayer, addLayer, loadReliable, loadUnreliable } = useSim();
+  const { stack, selected, setSelected, reorderLayer, removeLayer, addLayer, loadReliable, loadUnreliable, loadTcpLike } = useSim();
 
   return (
     <div>
       <div className="row" style={{ marginBottom: 12 }}>
         <button className="btn secondary small" onClick={loadReliable}>Reliable preset</button>
+        <button className="btn secondary small" onClick={loadTcpLike}>TCP-like preset</button>
         <button className="btn secondary small" onClick={loadUnreliable}>Unreliable preset</button>
         <button className="btn secondary small" onClick={addLayer}>+ Custom layer</button>
       </div>

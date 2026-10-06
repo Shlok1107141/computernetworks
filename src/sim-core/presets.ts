@@ -38,6 +38,25 @@ export function reliableStack(): LayerDef[] {
   ];
 }
 
+/**
+ * The reliable stack with the refinements real TCP added on top: slow start,
+ * an adaptive timeout learned from measured RTTs (with exponential backoff),
+ * and fast retransmit after 3 later packets are ACKed, plus a larger window.
+ */
+export function tcpLikeStack(): LayerDef[] {
+  return [
+    makeLayer('Application', [{ kind: 'ADD_HEADER', params: { app: 'demo' } }], { headerBytes: 8 }),
+    makeLayer('Transport', [
+      { kind: 'SEQUENCE', params: {} },
+      { kind: 'CHECKSUM', params: {} },
+      { kind: 'ACK', params: {} },
+      { kind: 'RETRANSMIT', params: { rto: 'adaptive', fast: 'on' } },
+      { kind: 'WINDOW', params: { growth: 'slow-start' } },
+    ], { headerBytes: 20, windowSize: 16, timeoutMs: 500 }),
+    networkLayer(),
+  ];
+}
+
 /** IP-like: re-applied at every router, where the TTL check belongs. */
 function networkLayer(): LayerDef {
   return makeLayer('Network', [

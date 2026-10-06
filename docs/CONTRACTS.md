@@ -49,7 +49,14 @@ Additions so far (all optional / additive):
 - `MetricSample.kind` gained `'undetected' | 'duplicate' | 'reordered'`;
   `FlowSummary` gained `undetected`, `duplicates`, `reordered`.
 - `layer.ts` exports `PRIMITIVE_KINDS`, `reliabilityLayers(stack)`, `delayOf(layers)`, `DEFAULT_DELAY_MS`.
-- Primitive params: `DROP_IF {field, op, value}`, `ADD_HEADER {<field>: value}`, `DELAY {ms}`.
+- Primitive params: `DROP_IF {field, op, value}`, `ADD_HEADER {<field>: value}`, `DELAY {ms}`,
+  `RETRANSMIT {rto: 'fixed'|'adaptive', fast: 'off'|'on'}`, `WINDOW {growth: 'aimd'|'slow-start'}`
+  (absent = the first option, the original behaviour).
+- `NetworkConfig.routingRoundMs` — Distance Vector exchange period after a topology change (default 100).
+- `RoutingResult.history` — DV only: the tables after each exchange round. `distanceVector(nodes, links, from?)`
+  re-converges from existing tables when `from` is given. `routing.ts` also exports `latencyFrom`, `DV_INFINITY`.
+- `FlowSummary.fastRetransmits`; a `retransmit` sample's value is 1 (timer) or 2 (`FAST_RETRANSMIT`).
+- `presets.ts` exports `tcpLikeStack()`; `validation.ts` exports `sweepLoss(base, stacks, lossValues)`.
 
 ## Contract 3 — the store shape (all three consume)
 
@@ -60,7 +67,10 @@ last-run outputs (`metrics, routingResult, moves, hasRun`), and actions
 UI reads/writes ONLY through these. If you need new state, add it to the store,
 note it here, and tell the team.
 
-Added actions: `addPrimitive`, `removePrimitive`, `movePrimitive`, `updatePrimitive`, `setDurationMs`.
+Added actions: `addPrimitive`, `removePrimitive`, `movePrimitive`, `updatePrimitive`, `setDurationMs`,
+`addFlow`, `removeFlow`, `moveNode`, `setRoutingRoundMs`, `loadTcpLike`, `baseConfig()`.
+Added state: `routingRoundMs`, `lastConfig` (the exact config of the last run — replay and the
+Dashboard read this, not live edits). `FLOW_COLORS` gives each flow its colour.
 
 ## Contract 4 — PacketMoveEvent (the animation seam, B depends on A)
 

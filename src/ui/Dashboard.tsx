@@ -4,24 +4,29 @@
 // time-series chart, plus CSV export for reproducible results.
 // ============================================================
 
+import { useState } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
-import { useSim } from '../store/simStore';
+import { FLOW_COLORS, useSim } from '../store/simStore';
+import type { FlowSummary } from '../sim-core/metrics';
+import { aggregate, latencyLabel, retransmitText } from './summary';
 
 export function Dashboard() {
-  const { metrics, flows, hasRun } = useSim();
+  const { metrics, hasRun, lastConfig } = useSim();
+  const [chartFlow, setChartFlow] = useState<string>('all');
 
-  if (!hasRun || !metrics) {
+  if (!hasRun || !metrics || !lastConfig) {
     return <div style={{ color: 'var(--muted)', fontSize: 13 }}>Run a simulation to see metrics.</div>;
   }
 
-  const flowIds = flows.map((f) => f.id);
+  // the flows and stack this run actually used, not whatever has been edited since
+  const flowIds = lastConfig.flows.map((f) => f.id);
   const summary = metrics.summarize(flowIds);
-
-  // build combined delivered-over-time series for the first flow
-  const f0 = flowIds[0];
-  const delivered = metrics.series(f0, 'delivered', 250);
-  const dropped = metrics.series(f0, 'dropped', 250);
-  const chartData = mergeSeries(delivered, dropped, ['delivered', 'dropped']);
+  const latency = latencyLabel(lastConfig.stack);
+  const shown = flowIds.includes(chartFlow) ? [chartFlow] : flowIds;
+  const chartData = mergeSeries(
+    shown.flatMap((id) => metrics.series(id, 'delivered', 250)),
+    shown.flatMap((id) => metrics.series(id, 'dropped', 250)),
+  );
 
   const exportCsv = () => {
     const blob = new Blob([metrics.toCSV()], { type: 'text/csv' });
@@ -34,26 +39,27 @@ export function Dashboard() {
   return (
     <div>
       <div className="stat-row">
-        {summary.map((s) => (
-          <div className="stat" key={s.flowId} style={{ flex: '1 1 100%' }}>
-            <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 6 }}>Flow {s.flowId}</div>
-            <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-              <Metric label="delivery" value={(s.deliveryRate * 100).toFixed(0) + '%'} />
-              <Metric label="delivered" value={String(s.delivered)} />
-              <Metric label="dropped" value={String(s.dropped)} />
-              <Metric label="corrupt, caught" value={String(s.corrupted)} />
-              <Metric label="corrupt, missed" value={String(s.undetected)} />
-              <Metric label="duplicates" value={String(s.duplicates)} />
-              <Metric label="out of order" value={String(s.reordered)} />
-              <Metric label="retransmits" value={String(s.retransmits)} />
-              <Metric label="avg RTT" value={s.avgRttMs.toFixed(1) + 'ms'} />
-              <Metric label="goodput" value={(s.goodputBps / 1000).toFixed(1) + ' kbps'} />
-            </div>
-          </div>
-        ))}
+        {summary.length > 1 && <FlowCard title="All flows" s={aggregate(summary)} latency={latency} />}
+        {summary.map((s, i) => {
+          const f = lastConfig.flows.at(i)!;
+          return <FlowCard key={s.flowId} title={`Flow ${s.flowId} (${f.src} → ${f.dst})`} color={FLOW_COLORS.at(i % FLOW_COLORS.length)} s={s} latency={latency} />;
+        })}
       </div>
 
-      <div style={{ height: 200, marginTop: 16 }}>
+      {flowIds.length > 1 && (
+        <div className="row" style={{ marginTop: 14 }}>
+          <span style={{ fontSize: 11, color: 'var(--muted)' }}>Chart</span>
+          <div className="seg">
+            {['all', ...flowIds].map((id) => (
+              <button key={id} className={(id === 'all' ? !flowIds.includes(chartFlow) : chartFlow === id) ? 'on' : ''} onClick={() => setChartFlow(id)}>
+                {id === 'all' ? 'All flows' : id}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div style={{ height: 200, marginTop: 12 }}>
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={chartData} margin={{ top: 6, right: 10, bottom: 0, left: -20 }}>
             <CartesianGrid stroke="#243441" strokeDasharray="3 3" />
@@ -72,6 +78,26 @@ export function Dashboard() {
   );
 }
 
+function FlowCard({ title, s, latency, color }: { title: string; s: FlowSummary; latency: string; color?: string }) {
+  return (
+    <div className="stat" style={{ flex: '1 1 100%', borderLeft: color ? `3px solid ${color}` : undefined }}>
+      <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 6 }}>{title}</div>
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+        <Metric label="delivery" value={(s.deliveryRate * 100).toFixed(0) + '%'} />
+        <Metric label="delivered" value={String(s.delivered)} />
+        <Metric label="dropped" value={String(s.dropped)} />
+        <Metric label="corrupt, caught" value={String(s.corrupted)} />
+        <Metric label="corrupt, missed" value={String(s.undetected)} />
+        <Metric label="duplicates" value={String(s.duplicates)} />
+        <Metric label="out of order" value={String(s.reordered)} />
+        <Metric label="retransmits" value={retransmitText(s)} />
+        <Metric label={latency} value={s.avgRttMs.toFixed(1) + 'ms'} />
+        <Metric label="goodput" value={(s.goodputBps / 1000).toFixed(1) + ' kbps'} />
+      </div>
+    </div>
+  );
+}
+
 function Metric({ label, value }: { label: string; value: string }) {
   return (
     <div>
@@ -81,9 +107,11 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function mergeSeries(a: { t: number; v: number }[], b: { t: number; v: number }[], keys: string[]) {
-  const map: Record<number, Record<string, number>> = {};
-  a.forEach((p) => { (map[p.t] ||= { t: p.t } as Record<string, number>)[keys[0]] = p.v; });
-  b.forEach((p) => { (map[p.t] ||= { t: p.t } as Record<string, number>)[keys[1]] = p.v; });
+/** Sum each series per time bucket (several flows add up), then line the two up. */
+function mergeSeries(delivered: { t: number; v: number }[], dropped: { t: number; v: number }[]) {
+  const map: Record<number, { t: number; delivered: number; dropped: number }> = {};
+  const row = (t: number) => (map[t] ||= { t, delivered: 0, dropped: 0 });
+  delivered.forEach((p) => { row(p.t).delivered += p.v; });
+  dropped.forEach((p) => { row(p.t).dropped += p.v; });
   return Object.values(map).sort((x, y) => x.t - y.t);
 }
