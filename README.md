@@ -5,7 +5,7 @@ composable primitives, tune every layer/link/flow knob, run real discrete-event
 traffic, watch packets move hop-to-hop, and measure the result — no code to run
 a protocol, no hardware, no backend.
 
-**Live site:** https://shlok1107141.github.io/computernetworks/ · **[2-minute demo video](https://shlok1107141.github.io/computernetworks/media/network-sandbox-demo.webm)** · **[How-to guide](docs/USER_GUIDE.md)**
+**Live site:** https://shlok1107141.github.io/computernetworks/ · **[3½-minute demo video](https://shlok1107141.github.io/computernetworks/media/network-sandbox-demo.webm)** (building a protocol, packet inspector, topology editor, routing) · **[How-to guide](docs/USER_GUIDE.md)**
 
 ## Run it
 

@@ -23,7 +23,7 @@ export default function App() {
           <p>Compose a protocol stack, tune every layer and link, run real discrete-event traffic, and watch packets move. Lab-ready, browser-native, no hardware.</p>
         </div>
         <div className="row" style={{ gap: 10 }}>
-          <a className="btn secondary small" href="./media/network-sandbox-demo.webm" target="_blank" rel="noreferrer">&#9654; Watch the 2-min demo</a>
+          <a className="btn secondary small" href="./media/network-sandbox-demo.webm" target="_blank" rel="noreferrer">&#9654; Watch the demo (3½ min)</a>
           <a className="btn secondary small" href="https://github.com/Shlok1107141/computernetworks/blob/main/docs/USER_GUIDE.md" target="_blank" rel="noreferrer">How-to guide</a>
           <span className="badge">sim-core &#183; discrete-event</span>
         </div>

@@ -4,8 +4,9 @@ Network Sandbox is a one-page lab: you design a network protocol from building b
 traffic through a simulated network, and measure what your design does.
 
 - **Open it:** <https://shlok1107141.github.io/computernetworks/> (or `npm run dev` locally, then <http://localhost:5173>)
-- **Watch first:** [2-minute demo video](https://shlok1107141.github.io/computernetworks/media/network-sandbox-demo.webm)
-  building a reliable protocol in the Stack Builder, then breaking it.
+- **Watch first:** [3½-minute demo video](https://shlok1107141.github.io/computernetworks/media/network-sandbox-demo.webm)
+  building a reliable protocol in the Stack Builder, breaking it, looking inside a packet,
+  editing the topology, and comparing Distance Vector, Link State and split horizon.
 - **Press F5 to reset everything.** Nothing is saved between page loads except scenario files you save yourself.
 
 **Defaults after F5:** Reliable preset · seed 42 · run for 8 s · Link State routing · one flow R1 → R6
@@ -86,7 +87,7 @@ Changes anywhere only take effect when you click **▶ Run simulation** again.
 | **seed** | The number behind all randomness | 42 |
 | **run for** | Simulated seconds, 1 to 120. Packets not delivered by then count as not delivered | 8 s |
 | **Tune flow** | Opens the first flow's settings in the Inspector | — |
-| **▶ Watch the 2-min demo / How-to guide** | Open the demo video and this guide | — |
+| **▶ Watch the demo (3½ min) / How-to guide** | Open the demo video and this guide | — |
 
 ## 4. Stack Builder and the primitive editor
 
