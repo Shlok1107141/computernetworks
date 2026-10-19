@@ -27,7 +27,7 @@ h1,h2,h3{font-family:'Space Grotesk','Inter',sans-serif;margin:0;}
 .panel{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:16px 16px 18px;}
 .panel h2{font-size:14.5px;}
 .panel .sub{color:var(--muted);font-size:12px;margin:4px 0 14px;line-height:1.45;}
-.btn{font-family:inherit;font-size:13px;font-weight:600;background:var(--teal);color:#06201D;
+.btn{text-decoration:none;display:inline-block;font-family:inherit;font-size:13px;font-weight:600;background:var(--teal);color:#06201D;
   border:none;border-radius:7px;padding:8px 15px;cursor:pointer;transition:opacity .12s;}
 .btn:hover{opacity:.85;}
 .btn:disabled{opacity:.4;cursor:not-allowed;}

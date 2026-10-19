@@ -34,7 +34,7 @@ const PRIMITIVE_HELP: Record<PrimitiveKind, string> = {
   SEQUENCE: 'Number packets; receiver drops duplicates (and with RETRANSMIT, delivers in order)',
   ACK: 'Receiver sends an ACK back for every packet it accepts',
   RETRANSMIT: 'Resend a packet if no ACK arrives within Timeout; optionally learn the timeout and resend early',
-  WINDOW: 'Cap unACKed packets by a congestion window (AIMD, optionally slow start), up to Window size',
+  WINDOW: 'Cap unACKed packets by a congestion window (AIMD, or TCP Tahoe / Reno), up to Window size',
   DROP_IF: 'Drop the packet when the condition holds (per-hop: checked at every router)',
   DELAY: 'Add processing time before sending (per-hop: at every router)',
   FRAGMENT: 'Split packets bigger than MTU; receiver reassembles, one lost piece loses all',
@@ -120,7 +120,7 @@ function PrimitiveParams({ p, onChange }: { p: Primitive; onChange: (params: Pri
     return (
       <div className="row" style={{ marginTop: 6, gap: 4 }}>
         <Choice label="growth" value={String(p.params.growth ?? 'aimd')}
-          options={[['aimd', 'AIMD only'], ['slow-start', 'slow start, then AIMD']]}
+          options={[['aimd', 'AIMD only'], ['tahoe', 'Tahoe: slow start, any loss → 1'], ['slow-start', 'Reno: slow start + fast recovery']]}
           onChange={(growth) => onChange({ ...p.params, growth })} />
       </div>
     );
@@ -167,7 +167,7 @@ function PrimitiveParams({ p, onChange }: { p: Primitive; onChange: (params: Pri
 }
 
 export function Inspector() {
-  const { selected, nodes, links, stack, flows, routing, liveRouting, updateLink, updateLayer, updateFlow, removeFlow } = useSim();
+  const { selected, nodes, links, stack, flows, routing, liveRouting, updateLink, updateLayer, updateFlow, removeFlow, removeLink } = useSim();
 
   if (!selected) {
     return <div style={{ color: 'var(--muted)', fontSize: 13 }}>Select a link, layer, or flow to tune its parameters.</div>;
@@ -186,9 +186,15 @@ export function Inspector() {
         <Knob label="Corruption" value={l.corruptPct} min={0} max={80} step={1} unit=" %" onChange={(v) => updateLink(l.id, { corruptPct: v })} />
         <Knob label="Queue size" value={l.queueSize} min={1} max={64} step={1} unit=" pkts" onChange={(v) => updateLink(l.id, { queueSize: v })} />
         <Knob label="Routing weight" value={l.weight} min={1} max={20} step={1} onChange={(v) => updateLink(l.id, { weight: v })} />
-        <button className="btn small" style={{ marginTop: 6 }} onClick={() => updateLink(l.id, { up: !l.up })}>
-          {l.up ? 'Kill link' : 'Restore link'}
-        </button>
+        <div className="row" style={{ marginTop: 6 }}>
+          <button className="btn small" onClick={() => updateLink(l.id, { up: !l.up })}>
+            {l.up ? 'Kill link' : 'Restore link'}
+          </button>
+          <button className="btn secondary small" onClick={() => removeLink(l.id)}>Delete link</button>
+        </div>
+        <div style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 6 }}>
+          Kill keeps the link but takes it down; Delete removes it from the topology (and any faults scheduled on it).
+        </div>
       </div>
     );
   }
@@ -267,7 +273,10 @@ export function Inspector() {
   }
 
   if (selected.type === 'node') {
-    return <RouterView key={`${selected.id}-${routing}`} id={selected.id} nodes={nodes} routing={routing} table={liveRouting()} />;
+    const table = liveRouting();
+    // a new topology or algorithm starts the round slider at "converged" again
+    const key = `${selected.id}-${routing}-${table.rounds}-${links.map((l) => `${l.id}${l.up}${l.weight}`).join()}`;
+    return <RouterView key={key} id={selected.id} nodes={nodes} routing={routing} table={table} />;
   }
 
   return null;
@@ -277,7 +286,7 @@ export function Inspector() {
 function RouterView({ id, nodes, routing, table }: { id: string; nodes: string[]; routing: 'dv' | 'ls'; table: RoutingResult }) {
   const rounds = table.history?.length ?? 0;
   const [round, setRound] = useState(rounds);
-  const shown = routing === 'dv' && table.history ? table.history.at(Math.max(0, round - 1))! : table;
+  const shown = routing === 'dv' && table.history ? table.history.at(Math.min(rounds, Math.max(1, round)) - 1)! : table;
   return (
     <div>
       <h3 style={{ fontSize: 14, marginBottom: 4 }}>Router {id}</h3>
@@ -317,6 +326,37 @@ function RouterView({ id, nodes, routing, table }: { id: string; nodes: string[]
           })}
         </tbody>
       </table>
+      <TopologyEdit id={id} />
+    </div>
+  );
+}
+
+/** Connect this router to another, or delete it. */
+function TopologyEdit({ id }: { id: string }) {
+  const { nodes, links, flows, addLink, removeNode } = useSim();
+  const linked = new Set(links.flatMap((l) => (l.a === id ? [l.b] : l.b === id ? [l.a] : [])));
+  const candidates = nodes.filter((n) => n !== id && !linked.has(n));
+  const [target, setTarget] = useState(candidates[0] ?? '');
+  const pick = candidates.includes(target) ? target : candidates[0] ?? '';
+  const usedBy = flows.filter((f) => f.src === id || f.dst === id).map((f) => f.id);
+  const blocked = usedBy.length > 0 ? `used by flow ${usedBy.join(', ')}: change its endpoints first`
+    : nodes.length <= 2 ? 'a network needs at least two routers' : null;
+  return (
+    <div style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+      <div className="kicker" style={{ marginBottom: 8 }}>Edit topology</div>
+      {candidates.length > 0 ? (
+        <div className="row" style={{ marginBottom: 10 }}>
+          <span style={{ fontSize: 12, color: 'var(--muted)' }}>Connect to</span>
+          <select value={pick} onChange={(e) => setTarget(e.target.value)}>
+            {candidates.map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+          <button className="btn small" onClick={() => addLink(id, pick)}>+ Add link</button>
+        </div>
+      ) : (
+        <div style={{ fontSize: 11.5, color: 'var(--muted)', marginBottom: 10 }}>Already linked to every other router.</div>
+      )}
+      <button className="btn secondary small" disabled={!!blocked} onClick={() => removeNode(id)}>Delete router {id}</button>
+      {blocked && <div style={{ fontSize: 10.5, color: 'var(--amber)', marginTop: 4 }}>Can't delete: {blocked}.</div>}
     </div>
   );
 }

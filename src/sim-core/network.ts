@@ -44,6 +44,7 @@ export interface NetworkConfig {
   // Distance Vector exchange period: after a topology change, round k of re-convergence
   // takes effect (k - 1) periods later. Link State instead floods at link speed.
   routingRoundMs?: number;
+  splitHorizon?: boolean; // Distance Vector: split horizon with poison reverse
 }
 
 export const DEFAULT_ROUTING_ROUND_MS = 100;
@@ -119,7 +120,11 @@ export function runSimulation(cfg: NetworkConfig): RunResult {
   const rtxParams = rtxLayer?.primitives.find((p) => p.kind === 'RETRANSMIT')?.params ?? {};
   const adaptiveRto = rtxParams.rto === 'adaptive';
   const fastRetransmit = !!rtxLayer && rtxParams.fast === 'on';
-  const slowStart = !!winLayer && winLayer.primitives.find((p) => p.kind === 'WINDOW')?.params.growth === 'slow-start';
+  // 'slow-start' = TCP Reno (fast recovery: a fast retransmit resumes at half the window);
+  // 'tahoe' = TCP Tahoe (every loss restarts slow start from 1)
+  const growth = winLayer?.primitives.find((p) => p.kind === 'WINDOW')?.params.growth;
+  const slowStart = growth === 'slow-start' || growth === 'tahoe';
+  const tahoe = growth === 'tahoe';
   const maxWindow = winLayer ? Math.max(1, winLayer.windowSize) : Infinity;
   const hasSequence = !!rel.seq;
   const inOrder = hasSequence && !!rtxLayer; // only a retransmitting stack can afford to wait for gaps
@@ -130,7 +135,7 @@ export function runSimulation(cfg: NetworkConfig): RunResult {
 
   const computeRouting = (): RoutingResult =>
     cfg.routing === 'dv'
-      ? distanceVector(cfg.nodes, [...linkMap.values()])
+      ? distanceVector(cfg.nodes, [...linkMap.values()], undefined, cfg.splitHorizon)
       : linkState(cfg.nodes, [...linkMap.values()]);
 
   // The tables routers actually forward with. They start converged; after a
@@ -221,7 +226,7 @@ export function runSimulation(cfg: NetworkConfig): RunResult {
     if (slowStart) {
       // TCP Reno: remember half the window; a timeout restarts from 1, a fast retransmit resumes at half
       st.ssthresh = Math.max(2, st.cwnd / 2);
-      st.cwnd = timedOut ? 1 : st.ssthresh;
+      st.cwnd = timedOut || tahoe ? 1 : st.ssthresh;
     } else {
       st.cwnd = Math.max(1, st.cwnd / 2);
     }
@@ -487,6 +492,7 @@ export function runSimulation(cfg: NetworkConfig): RunResult {
       eng.emitMove({
         packetId: pkt.id, flowId: pkt.flowId, linkId: link.id, fromNode: from, toNode: to,
         departAt: eng.now, arriveAt: eng.now + 1, isAck: pkt.isAck, dropped: true,
+        dropReason: 'queue full', ...snapshot(pkt, false),
       });
       dataDrop(pkt, from, link.id);
       return;
@@ -512,6 +518,8 @@ export function runSimulation(cfg: NetworkConfig): RunResult {
       arriveAt,
       isAck: pkt.isAck,
       dropped: willDrop,
+      ...(willDrop ? { dropReason: 'link loss' } : {}),
+      ...snapshot(pkt, willCorrupt),
     });
 
     if (willDrop) {
@@ -571,7 +579,7 @@ export function runSimulation(cfg: NetworkConfig): RunResult {
       }
     } else {
       // every router re-runs Bellman-Ford from its current (now partly stale) vector, one round per period
-      const res = distanceVector(cfg.nodes, links, live);
+      const res = distanceVector(cfg.nodes, links, live, cfg.splitHorizon);
       res.history!.forEach((tables, k) => {
         engine.schedule(k * roundMs, { kind: 'ROUTING_TICK', data: { epoch, tables } });
       });
@@ -605,6 +613,21 @@ export function runSimulation(cfg: NetworkConfig): RunResult {
   engine.run(cfg.durationMs);
 
   return { metrics, routingResult: computeRouting(), moves };
+}
+
+/** What the packet inspector shows for one hop: the packet as it entered the link. */
+function snapshot(pkt: Packet, corruptedHere: boolean) {
+  const count = Number(pkt.meta.fragCount ?? 1);
+  return {
+    seq: pkt.seq,
+    size: pkt.size,
+    ttl: pkt.ttl,
+    headers: pkt.headers.map((h) => ({ layer: h.layer, fields: { ...h.fields } })),
+    corrupted: pkt.corrupted || corruptedHere,
+    ...(corruptedHere ? { corruptedHere: true } : {}),
+    ...(count > 1 ? { fragment: `${Number(pkt.meta.fragIndex) + 1}/${count}` } : {}),
+    ...(pkt.isAck ? { ackFor: pkt.ackFor, cumAck: pkt.cumAck } : {}),
+  };
 }
 
 /** Flip one character of the payload — real bit damage a checksum can catch. */

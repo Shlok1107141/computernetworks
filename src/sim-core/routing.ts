@@ -36,14 +36,26 @@ function neighbors(links: LinkDef[]): Record<string, { node: string; w: number }
  * its vector purely from what its neighbours advertised in the previous round.
  * Starting from `from` (the tables before a topology change) reproduces real
  * re-convergence, including transient loops and count-to-infinity.
+ *
+ * With `splitHorizon`, a router advertises infinity for a destination back to
+ * the neighbour it routes that destination through (split horizon with poison
+ * reverse), which removes two-router loops.
  */
-export function distanceVector(nodes: string[], links: LinkDef[], from?: RoutingTables): RoutingResult {
+export function distanceVector(nodes: string[], links: LinkDef[], from?: RoutingTables, splitHorizon = false): RoutingResult {
   const adj = neighbors(links);
   let dist: Record<string, Record<string, number>> = {};
+  let hops: Record<string, Record<string, string | null>> = {};
   for (const a of nodes) {
     dist[a] = {};
-    for (const b of nodes) dist[a][b] = a === b ? 0 : from ? Math.min(from.dist[a]?.[b] ?? Infinity, DV_INFINITY) : Infinity;
+    hops[a] = {};
+    for (const b of nodes) {
+      dist[a][b] = a === b ? 0 : from ? Math.min(from.dist[a]?.[b] ?? Infinity, DV_INFINITY) : Infinity;
+      hops[a][b] = from?.nextHop[a]?.[b] ?? null;
+    }
   }
+  // what neighbour `nb` tells `v` about `dest`
+  const advertised = (nb: string, v: string, dest: string) =>
+    splitHorizon && dest !== nb && hops[nb][dest] === v ? Infinity : dist[nb][dest];
 
   const history: RoutingTables[] = [];
   const limit = 4 * DV_INFINITY;
@@ -59,7 +71,7 @@ export function distanceVector(nodes: string[], links: LinkDef[], from?: Routing
         let hop: string | null = v === dest ? v : null;
         if (v !== dest) {
           for (const nb of adj[v] || []) {
-            const via = nb.w + dist[nb.node][dest];
+            const via = nb.w + advertised(nb.node, v, dest);
             if (via < best) { best = via; hop = nb.node; }
           }
         }
@@ -70,6 +82,7 @@ export function distanceVector(nodes: string[], links: LinkDef[], from?: Routing
       }
     }
     dist = next;
+    hops = nextHop;
     history.push({ dist: next, nextHop });
     if (!changed) break;
   }

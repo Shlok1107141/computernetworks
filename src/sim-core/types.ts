@@ -79,4 +79,15 @@ export interface PacketMoveEvent {
   arriveAt: number;
   isAck: boolean;
   dropped: boolean;     // will it be dropped mid-flight?
+  // Snapshot for the packet inspector: the packet as it entered this link.
+  dropReason?: string;
+  seq?: number;
+  size?: number;
+  ttl?: number;
+  headers?: Header[];   // innermost (pushed first) to outermost
+  corrupted?: boolean;  // damaged by the time it reaches the far end
+  corruptedHere?: boolean; // damaged on this link
+  fragment?: string;    // e.g. "2/3"
+  ackFor?: number;
+  cumAck?: number;
 }

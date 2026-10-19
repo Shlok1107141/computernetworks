@@ -5,14 +5,14 @@ composable primitives, tune every layer/link/flow knob, run real discrete-event
 traffic, watch packets move hop-to-hop, and measure the result — no code to run
 a protocol, no hardware, no backend.
 
-**Live site:** https://shlok1107141.github.io/computernetworks/
+**Live site:** https://shlok1107141.github.io/computernetworks/ · **[2-minute demo video](https://shlok1107141.github.io/computernetworks/media/network-sandbox-demo.webm)** · **[How-to guide](docs/USER_GUIDE.md)**
 
 ## Run it
 
 ```bash
 npm install
 npm run dev        # dev server at http://localhost:5173
-npm test           # 20 groups of invariant checks over the simulation core
+npm test           # 23 groups of invariant checks over the simulation core
 npm run build      # static production build in dist/ (deploy anywhere)
 ```
 
@@ -28,10 +28,13 @@ npm run build      # static production build in dist/ (deploy anywhere)
   routing weight), per layer (window, timeout, MTU, header bytes), per flow (endpoints,
   rate, count, payload), plus seed, run length and the Distance Vector update period.
 - **Run several flows at once**, each with its own colour, competing for the same links.
+- **Edit the topology:** add routers, connect or delete links and routers, drag them around.
 - **Compare routing:** Distance Vector and Link State re-converge differently after a link
-  fails; step through Distance Vector's exchange rounds on any router.
+  fails; step through Distance Vector's exchange rounds on any router; switch on split horizon
+  (with poison reverse) to stop its two-router loops.
 - **Replay** the actual event timeline packet by packet, with live counters, an event log,
-  and links turning red at the moment a scheduled failure hits. Drag routers to rearrange.
+  and links turning red at the moment a scheduled failure hits. Click any packet to open the
+  **packet inspector**: its header stack layer by layer, size, TTL, damage, and its whole journey.
 - **Experiment:** schedule link failures mid-run, compare two stacks on identical traffic,
   sweep loss from 0–30% across four stacks, export metrics as CSV, save/load scenarios.
 
@@ -44,7 +47,7 @@ npm run build      # static production build in dist/ (deploy anywhere)
 | `SEQUENCE` | Numbers packets; receiver drops duplicates, and with `RETRANSMIT` delivers in order | — |
 | `ACK` | Receiver sends an ACK (cumulative + selective, with a timestamp echo) back through the network | — |
 | `RETRANSMIT` | Resends a packet if no ACK arrives in time (needs `ACK`) | timeout fixed / adaptive (RFC 6298, 200 ms floor, backoff); fast retransmit off / on (3 later ACKs) |
-| `WINDOW` | Caps unACKed packets with a congestion window, up to the window size (needs `ACK`) | growth AIMD / slow start then AIMD (Reno) |
+| `WINDOW` | Caps unACKed packets with a congestion window, up to the window size (needs `ACK`) | growth AIMD / Tahoe (slow start, any loss → 1) / Reno (slow start + fast recovery) |
 | `DROP_IF` | Drops a packet when `ttl`/`size`/`seq` meets a condition | field, operator, value |
 | `DELAY` | Adds processing time (once, or at every hop for a per-hop layer) | ms |
 | `FRAGMENT` | Splits packets larger than the layer's MTU; the receiver reassembles them | layer MTU |

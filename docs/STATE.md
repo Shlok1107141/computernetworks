@@ -37,14 +37,22 @@ _Last updated: end of Phase 5 — feature complete (2026-10-06)_
   draggable routers; replay shows scheduled faults; latency label honest without ACKs.
 - Bundle split (first load 242 KB), lint clean.
 
-**Validation:** `npm test` → 20/20 groups pass. `npm run build` clean, `tsc -b` clean,
+**Phase 6 — optional extras (2026-10-19)**
+- Editable topology: + Router, connect / delete links, delete routers (guarded), reset.
+- Packet inspector: click a dot or log line to see a packet's header stack, size, TTL,
+  damage / loss reason, fragment, and its whole journey.
+- Distance Vector split horizon with poison reverse (toggle); TCP Tahoe window option
+  alongside Reno.
+- Demo video served by the site (`public/media`), how-to guide in `docs/USER_GUIDE.md`.
+
+**Validation:** `npm test` → 23/23 groups pass. `npm run build` clean, `tsc -b` clean,
 `oxlint` clean. Every knob in the UI changes the simulation.
 
 ## 🔭 Possible extensions (beyond the project's scope)
 
 | Item | Notes |
 |---|---|
-| Editable topology | Add/remove routers and links in the UI (the engine already takes any graph). |
-| Fast recovery / SACK-based recovery | Reno's window inflation; would further help TCP-like on lossy links. |
 | Fairness metrics | Jain's fairness index across competing flows. |
-| Count-to-infinity mitigations | Split horizon / poison reverse for Distance Vector. |
+| Classic dup-ACK fast recovery | Recovery is SACK-style; Reno's window inflation isn't modelled separately. |
+| Longer DV loops | Split horizon stops two-router loops only; route poisoning / hold-down timers would cover more. |
+| CRC checksum | The additive checksum misses reordered bytes. |

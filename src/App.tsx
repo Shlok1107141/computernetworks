@@ -12,7 +12,7 @@ const Comparison = lazy(() => import('./ui/Comparison').then((m) => ({ default: 
 const loading = <div style={{ color: 'var(--muted)', fontSize: 13 }}>Loading charts…</div>;
 
 export default function App() {
-  const { run, routing, setRouting, routingRoundMs, setRoutingRoundMs, seed, setSeed, durationMs, setDurationMs, flows, setSelected } = useSim();
+  const { run, routing, setRouting, routingRoundMs, setRoutingRoundMs, splitHorizon, setSplitHorizon, seed, setSeed, durationMs, setDurationMs, flows, setSelected } = useSim();
 
   return (
     <div className="wrap">
@@ -22,7 +22,11 @@ export default function App() {
           <h1>Network Sandbox</h1>
           <p>Compose a protocol stack, tune every layer and link, run real discrete-event traffic, and watch packets move. Lab-ready, browser-native, no hardware.</p>
         </div>
-        <span className="badge">sim-core &#183; discrete-event</span>
+        <div className="row" style={{ gap: 10 }}>
+          <a className="btn secondary small" href="./media/network-sandbox-demo.webm" target="_blank" rel="noreferrer">&#9654; Watch the 2-min demo</a>
+          <a className="btn secondary small" href="https://github.com/Shlok1107141/computernetworks/blob/main/docs/USER_GUIDE.md" target="_blank" rel="noreferrer">How-to guide</a>
+          <span className="badge">sim-core &#183; discrete-event</span>
+        </div>
       </header>
 
       <div className="control-bar">
@@ -36,6 +40,12 @@ export default function App() {
             DV update every
             <input type="number" min={10} max={2000} step={10} value={routingRoundMs}
               onChange={(e) => setRoutingRoundMs(+e.target.value)} /> ms
+          </label>
+        )}
+        {routing === 'dv' && (
+          <label className="seed" title="Split horizon with poison reverse: a router tells a neighbour 'unreachable' for routes that go through that neighbour, which stops two-router loops">
+            <input type="checkbox" checked={splitHorizon} onChange={(e) => setSplitHorizon(e.target.checked)} style={{ width: 'auto' }} />
+            split horizon
           </label>
         )}
         <label className="seed">seed
@@ -91,7 +101,7 @@ export default function App() {
       </section>
 
       <div className="footer-note">
-        Phase-5 &#183; discrete-event core, per-hop &amp; end-to-end layers, all 9 primitives live, reliability with slow start, adaptive timeout &amp; fast retransmit, DV vs LS convergence, link queues, multiple flows, A/B harness + loss sweep &#183; 20/20 self-check groups pass
+        Phase-6 &#183; discrete-event core, editable topology, per-hop &amp; end-to-end layers, all 9 primitives live, packet inspector, TCP Tahoe / Reno with adaptive timeout &amp; fast retransmit, DV (with split horizon) vs LS convergence, link queues, multiple flows, A/B harness + loss sweep &#183; 23/23 self-check groups pass
       </div>
     </div>
   );

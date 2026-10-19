@@ -6,7 +6,7 @@
 // ============================================================
 
 import { create } from 'zustand';
-import type { LinkDef } from '../sim-core/link';
+import { makeLink, type LinkDef } from '../sim-core/link';
 import { DEFAULT_DELAY_MS, type LayerDef, type Primitive, type PrimitiveKind } from '../sim-core/layer';
 import type { FlowDef, FaultDef, NetworkConfig } from '../sim-core/network';
 import { DEFAULT_ROUTING_ROUND_MS, runSimulation } from '../sim-core/network';
@@ -26,6 +26,7 @@ interface SimState {
   faults: FaultDef[];
   routing: 'dv' | 'ls';
   routingRoundMs: number;
+  splitHorizon: boolean;
   seed: number;
   durationMs: number;
 
@@ -54,8 +55,14 @@ interface SimState {
   addFlow: () => void;
   removeFlow: (id: string) => void;
   moveNode: (id: string, x: number, y: number) => void;
+  addNode: () => void;
+  removeNode: (id: string) => void;
+  addLink: (a: string, b: string) => void;
+  removeLink: (id: string) => void;
+  resetTopology: () => void;
   setRouting: (r: 'dv' | 'ls') => void;
   setRoutingRoundMs: (ms: number) => void;
+  setSplitHorizon: (on: boolean) => void;
   setSeed: (n: number) => void;
   setDurationMs: (ms: number) => void;
   addFault: (f: FaultDef) => void;
@@ -80,6 +87,18 @@ const DEFAULT_POS: NodePos = {
 
 const topo = defaultTopology();
 
+/** Where a newly added router appears: the free spot farthest from existing routers. */
+function freeSpot(pos: NodePos): { x: number; y: number } {
+  let best = { x: 290, y: 150 }, bestD = -1;
+  for (let x = 60; x <= 520; x += 46) {
+    for (let y = 40; y <= 260; y += 44) {
+      const d = Math.min(...Object.values(pos).map((p) => Math.hypot(p.x - x, p.y - y)));
+      if (d > bestD) { bestD = d; best = { x, y }; }
+    }
+  }
+  return best;
+}
+
 function mapLayer(stack: LayerDef[], layerId: string, fn: (prims: Primitive[]) => Primitive[]): LayerDef[] {
   return stack.map((l) => (l.id === layerId ? { ...l, primitives: fn(l.primitives) } : l));
 }
@@ -100,6 +119,7 @@ export const useSim = create<SimState>((set, get) => ({
   faults: [],
   routing: 'ls',
   routingRoundMs: DEFAULT_ROUTING_ROUND_MS,
+  splitHorizon: false,
   seed: 42,
   durationMs: 8000,
 
@@ -186,8 +206,66 @@ export const useSim = create<SimState>((set, get) => ({
   moveNode: (id, x, y) =>
     set((st) => ({ nodePos: { ...st.nodePos, [id]: { x: Math.min(560, Math.max(20, x)), y: Math.min(280, Math.max(20, y)) } } })),
 
+  addNode: () =>
+    set((st) => {
+      let n = st.nodes.length + 1;
+      while (st.nodes.includes(`R${n}`)) n++;
+      const id = `R${n}`;
+      return {
+        nodes: [...st.nodes, id],
+        nodePos: { ...st.nodePos, [id]: freeSpot(st.nodePos) },
+        selected: { type: 'node', id },
+      };
+    }),
+
+  removeNode: (id) =>
+    set((st) => {
+      if (st.nodes.length <= 2 || st.flows.some((f) => f.src === id || f.dst === id)) return {};
+      const links = st.links.filter((l) => l.a !== id && l.b !== id);
+      const linkIds = new Set(links.map((l) => l.id));
+      const nodePos = { ...st.nodePos };
+      delete nodePos[id];
+      return {
+        nodes: st.nodes.filter((n) => n !== id),
+        nodePos,
+        links,
+        faults: st.faults.filter((f) => linkIds.has(f.linkId)),
+        selected: null,
+      };
+    }),
+
+  addLink: (a, b) =>
+    set((st) => {
+      if (a === b || st.links.some((l) => (l.a === a && l.b === b) || (l.a === b && l.b === a))) return {};
+      const link = makeLink(a, b);
+      return { links: [...st.links, link], selected: { type: 'link', id: link.id } };
+    }),
+
+  removeLink: (id) =>
+    set((st) => ({
+      links: st.links.filter((l) => l.id !== id),
+      faults: st.faults.filter((f) => f.linkId !== id),
+      selected: null,
+    })),
+
+  resetTopology: () =>
+    set((st) => {
+      const t = defaultTopology();
+      return {
+        nodes: t.nodes,
+        nodePos: DEFAULT_POS,
+        links: t.links,
+        faults: [],
+        flows: st.flows.filter((f) => t.nodes.includes(f.src) && t.nodes.includes(f.dst)).length
+          ? st.flows.filter((f) => t.nodes.includes(f.src) && t.nodes.includes(f.dst))
+          : [{ id: 'f1', src: 'R1', dst: 'R6', ratePps: 12, count: 40, payloadBytes: 512 }],
+        selected: null,
+      };
+    }),
+
   setRouting: (r) => set({ routing: r }),
   setRoutingRoundMs: (ms) => set({ routingRoundMs: Math.max(10, ms) }),
+  setSplitHorizon: (on) => set({ splitHorizon: on }),
   setSeed: (n) => set({ seed: n }),
   setDurationMs: (ms) => set({ durationMs: Math.max(500, ms) }),
 
@@ -199,7 +277,7 @@ export const useSim = create<SimState>((set, get) => ({
     return JSON.stringify(
       {
         nodes: st.nodes, nodePos: st.nodePos, links: st.links, stack: st.stack,
-        flows: st.flows, faults: st.faults, routing: st.routing, routingRoundMs: st.routingRoundMs,
+        flows: st.flows, faults: st.faults, routing: st.routing, routingRoundMs: st.routingRoundMs, splitHorizon: st.splitHorizon,
         seed: st.seed, durationMs: st.durationMs,
       },
       null, 2
@@ -217,6 +295,7 @@ export const useSim = create<SimState>((set, get) => ({
         faults: p.faults ?? [],
         routing: p.routing ?? get().routing,
         routingRoundMs: p.routingRoundMs ?? DEFAULT_ROUTING_ROUND_MS,
+        splitHorizon: !!p.splitHorizon,
         seed: p.seed ?? get().seed,
         durationMs: p.durationMs ?? get().durationMs,
         hasRun: false,
@@ -234,7 +313,7 @@ export const useSim = create<SimState>((set, get) => ({
   liveRouting: () => {
     const st = get();
     return st.routing === 'dv'
-      ? distanceVector(st.nodes, st.links)
+      ? distanceVector(st.nodes, st.links, undefined, st.splitHorizon)
       : linkState(st.nodes, st.links);
   },
 
@@ -242,7 +321,7 @@ export const useSim = create<SimState>((set, get) => ({
     const st = get();
     return {
       nodes: st.nodes, links: st.links, flows: st.flows, faults: st.faults,
-      routing: st.routing, routingRoundMs: st.routingRoundMs, seed: st.seed, durationMs: st.durationMs,
+      routing: st.routing, routingRoundMs: st.routingRoundMs, splitHorizon: st.splitHorizon, seed: st.seed, durationMs: st.durationMs,
     };
   },
 

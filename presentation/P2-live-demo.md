@@ -108,6 +108,15 @@ what the results mean and what's next.
 - **Loss sweep 0–30%** at the bottom: one chart of four stacks as loss rises. The TCP-like
   line falls fastest under heavy random loss, because it treats every loss as congestion.
 - Drag any router to rearrange the graph.
+- **Packet inspector:** scrub the replay to about 0.38 s and click an amber dot. "Here's one
+  packet on one hop: its headers layer by layer, outermost first, its size, TTL, and its
+  whole journey." Click the journey buttons to follow it.
+- **Split horizon:** in Demo 8 step 2, tick **split horizon** and run again under Distance
+  Vector: **92%**, and no packet bounces back from R3 to R2.
+- **Edit the topology:** click **+ Router**, then in the Inspector **Connect to R6** and
+  **R1**. Run: traffic now takes R1 → R7 → R6. **Reset topology** puts it back.
+
+The full click-by-click guide is `docs/USER_GUIDE.md` in the repository.
 
 **Handoff:** "So every block does a real job. [P3] will show how we know these numbers are
 right, what they taught us, and what's next."

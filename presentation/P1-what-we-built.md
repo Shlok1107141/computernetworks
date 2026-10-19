@@ -57,12 +57,14 @@ before → after."
 | Where layers run | Endpoints only | Each layer: end-to-end or every hop |
 | Link queues | Queue size knob did nothing | Real queues: limited bandwidth causes queueing delay and overflow drops |
 | Building a protocol | Read-only chips | Full editor: add, reorder, remove and configure primitives |
-| TCP refinements | — | Adaptive timeout, fast retransmit, slow start; a TCP-like preset |
-| Routing after a failure | Instant, DV and LS identical | LS reroutes as the news floods; DV catches up round by round and can loop |
+| TCP refinements | — | Adaptive timeout, fast retransmit, Tahoe or Reno window; a TCP-like preset |
+| Routing after a failure | Instant, DV and LS identical | LS reroutes as the news floods; DV catches up round by round and can loop; split horizon stops the loops |
+| Topology | Fixed 6 routers | Add, connect and delete routers and links |
+| Packet debugging | — | Packet inspector: click a packet to see its header stack and journey |
 | Traffic | One flow | Several flows at once, each with its own colour |
 | Metrics | 6 | 11, including corruption caught vs missed, duplicates, out of order, retransmits |
 | Other UI | — | Run-duration knob, router tables with DV round-by-round view, loss-sweep chart, draggable routers |
-| Tests | 9 groups | 20 groups, run automatically on every push |
+| Tests | 9 groups | 23 groups, run automatically on every push |
 | Hosting | — | Publishes to GitHub Pages automatically |
 
 "Every knob on the page now changes the simulation. Nothing is decorative."

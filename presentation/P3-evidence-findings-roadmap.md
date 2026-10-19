@@ -10,7 +10,7 @@ explain what the results mean, and close.**
 "A simulator is only useful if you can trust it, so the engine is tested on its own,
 without the UI."
 
-- `npm test` runs **20 groups of checks** and **runs automatically on every push to
+- `npm test` runs **23 groups of checks** and **runs automatically on every push to
   GitHub**. If any check fails, the site isn't published.
 - What they prove:
   - **Basics:** checksums are deterministic, Distance Vector and Link State agree on every
@@ -60,23 +60,25 @@ These are the trade-offs, and they're the interesting part.
 7. **Distance Vector pays for not knowing the whole map.** After R3–R4 fails, Link State
    routers hear about it almost instantly. Distance Vector routers trade stale tables for
    a few rounds, packets bounce between R2 and R3, and delivery drops from 94% to 89%.
+   Switching on **split horizon** stops the bounce entirely and recovers most of the gap (92%).
+8. **Tahoe vs Reno isn't a clean win.** Under congestion with a 2-packet buffer, Reno (fast
+   recovery) delivers 86% vs Tahoe's 82% at seed 42, but on other seeds Tahoe's harsher
+   back-off wins. The test suite checks the mechanism, not a winner.
 
 ## 3. Honest limits (30 s)
 
 - It models *design choices*; it is not a byte-accurate copy of real TCP/IP.
-- The topology is a fixed 6-router network (the engine accepts any graph; the UI doesn't edit it).
-- Fast retransmit has no Reno "fast recovery" window inflation.
-- Distance Vector has no split horizon or poison reverse, so count-to-infinity is visible
-  by design.
+- Loss recovery uses selective ACKs (a SACK-style pipe), so Reno's classic dup-ACK window
+  inflation isn't modelled separately.
+- Split horizon stops two-router loops only; longer loops would need route poisoning or hold-down timers.
 - The checksum is a simple additive sum: it catches flipped bits, not reordered bytes.
 
 ## 4. What's next (30 s)
 
-1. **Edit the topology in the UI:** add routers and links.
-2. **Fairness:** Jain's fairness index for competing flows.
-3. **Routing fixes:** split horizon / poison reverse, and measure how much they shorten
-   Distance Vector's loops.
-4. **Fast recovery and SACK:** the next steps of TCP's evolution, using the same building blocks.
+1. **Fairness:** Jain's fairness index for competing flows.
+2. **Longer-loop protection** for Distance Vector: route poisoning and hold-down timers.
+3. **A CRC checksum option**, to compare error-detection strength.
+4. **Shareable scenario gallery:** the Review 1 "template library", online.
 
 ## 5. Close (15 s)
 

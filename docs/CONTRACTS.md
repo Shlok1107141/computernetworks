@@ -57,6 +57,10 @@ Additions so far (all optional / additive):
   re-converges from existing tables when `from` is given. `routing.ts` also exports `latencyFrom`, `DV_INFINITY`.
 - `FlowSummary.fastRetransmits`; a `retransmit` sample's value is 1 (timer) or 2 (`FAST_RETRANSMIT`).
 - `presets.ts` exports `tcpLikeStack()`; `validation.ts` exports `sweepLoss(base, stacks, lossValues)`.
+- `NetworkConfig.splitHorizon` (DV split horizon with poison reverse); `distanceVector(nodes, links, from?, splitHorizon?)`.
+- `WINDOW {growth}` gained `'tahoe'` (`'slow-start'` = Reno).
+- `PacketMoveEvent` gained optional snapshot fields for the packet inspector: `seq, size, ttl, headers`
+  (innermost → outermost), `corrupted, corruptedHere, fragment ("2/3"), ackFor, cumAck, dropReason`.
 
 ## Contract 3 — the store shape (all three consume)
 
@@ -68,7 +72,9 @@ UI reads/writes ONLY through these. If you need new state, add it to the store,
 note it here, and tell the team.
 
 Added actions: `addPrimitive`, `removePrimitive`, `movePrimitive`, `updatePrimitive`, `setDurationMs`,
-`addFlow`, `removeFlow`, `moveNode`, `setRoutingRoundMs`, `loadTcpLike`, `baseConfig()`.
+`addFlow`, `removeFlow`, `moveNode`, `setRoutingRoundMs`, `loadTcpLike`, `baseConfig()`,
+`addNode`, `removeNode`, `addLink`, `removeLink`, `resetTopology`, `setSplitHorizon`.
+Added state: `splitHorizon`.
 Added state: `routingRoundMs`, `lastConfig` (the exact config of the last run — replay and the
 Dashboard read this, not live edits). `FLOW_COLORS` gives each flow its colour.
 

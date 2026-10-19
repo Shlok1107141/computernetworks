@@ -155,3 +155,30 @@ than LS (89% vs 94% at defaults, 50 pkt/s) because of transient loops.
 **Validation:** `npm test` → 20/20 groups ([19] routing re-convergence, [20] adaptive
 timeout, fast retransmit, congestion vs heavy-loss trade-off are new). All numbers in
 the presentation scripts and guide re-verified unchanged.
+
+---
+
+## Phase 6 — Optional extras (2026-10-19)
+
+**What shipped:**
+- **Topology editor.** "+ Router" places a new router in the emptiest spot; a router's
+  Inspector can connect it to any unlinked router or delete it (refused while a flow starts
+  or ends there, or when only two routers remain). Links can be deleted (their scheduled faults
+  go too). "Reset topology" restores the default six routers.
+- **Packet inspector.** Each `PacketMoveEvent` now carries a snapshot of the packet as it
+  entered the link (seq, size, TTL, header stack, damage, fragment, ACK fields, drop reason).
+  Clicking a dot or an event-log line pauses the replay and shows the header stack outermost
+  first plus the packet's journey hop by hop.
+- **Split horizon with poison reverse** for Distance Vector (top-bar toggle,
+  `NetworkConfig.splitHorizon`). After R3-R4 fails at 1 s (unreliable, 50 pkt/s, seed 42):
+  no packet bounces R3 → R2 (was 20) and delivery rises 89% → 92% (LS: 94%).
+- **TCP Tahoe** window option (`WINDOW {growth: 'tahoe'}`): any loss restarts slow start
+  from 1; the existing `'slow-start'` option is labelled Reno (fast retransmit resumes at
+  ssthresh). Recovery accounting is SACK-style, so Reno's dup-ACK window inflation is not
+  modelled separately. Finding: with a tiny buffer Tahoe is not reliably worse
+  (82% vs 86% at seed 42, but Tahoe wins on some seeds).
+- Demo video in `public/media/` (served by Pages, linked from the app header and README);
+  `docs/USER_GUIDE.md` how-to guide with 14 exercises.
+
+**Validation:** `npm test` → 23/23 groups ([21] split horizon, [22] Tahoe vs Reno window cuts,
+[23] packet snapshots are new). Default-preset numbers in the guide and scripts unchanged.

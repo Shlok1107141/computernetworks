@@ -359,5 +359,72 @@ console.log('\n[20] Adaptive timeout and fast retransmit (TCP-like) — and what
   assert(tcpH.deliveryRate < relH.deliveryRate, `under heavy random loss, backing off as if congested hurts TCP-like (${(tcpH.deliveryRate*100).toFixed(0)}% vs ${(relH.deliveryRate*100).toFixed(0)}%)`);
 }
 
+console.log('\n[21] Split horizon with poison reverse removes Distance Vector\'s two-router loop');
+{
+  const { nodes, links } = defaultTopology();
+  const killed = links.map((l) => (l.id === 'R3-R4' ? { ...l, up: false } : l));
+  const dv0 = distanceVector(nodes, links, undefined, true);
+  const re = distanceVector(nodes, killed, dv0, true);
+  const looped = re.history!.some((h) => h.nextHop['R3']['R6'] === 'R2' && h.nextHop['R2']['R6'] === 'R3');
+  assert(!looped, `no R2 ⇄ R3 loop during re-convergence (${re.rounds} rounds)`);
+  const agree = nodes.every((a) => nodes.every((b) => re.dist[a][b] === linkState(nodes, killed).dist[a][b]));
+  assert(agree, 'still converges to the same shortest paths as Link State');
+  const run = (splitHorizon: boolean) => runSimulation({
+    nodes, links: links.map((l) => ({ ...l, lossPct: 0, corruptPct: 0 })), stack: unreliableStack(),
+    flows: [{ id: 'f1', src: 'R1', dst: 'R6', ratePps: 50, count: 150, payloadBytes: 512 }],
+    faults: [{ atMs: 1000, linkId: 'R3-R4', action: 'kill' }], routing: 'dv', splitHorizon, seed: 3, durationMs: 8000,
+  });
+  const plain = run(false), sh = run(true);
+  const bounces = (r: typeof plain) => r.moves.filter((m) => m.fromNode === 'R3' && m.toNode === 'R2').length;
+  assert(bounces(sh) === 0 && bounces(plain) > 0, `packets no longer bounce R3 → R2 (${bounces(plain)} → ${bounces(sh)})`);
+  const d = (r: typeof plain) => r.metrics.summarize(['f1'])[0].delivered;
+  assert(d(sh) > d(plain), `so fewer packets are lost during convergence (${d(plain)} → ${d(sh)} delivered)`);
+}
+
+console.log('\n[22] Tahoe vs Reno: what a fast retransmit does to the window');
+{
+  const { nodes, links } = defaultTopology();
+  const withGrowth = (growth: string) => tcpLikeStack().map((l) => l.name !== 'Transport' ? l : {
+    ...l, primitives: l.primitives.map((p) => p.kind === 'WINDOW' ? { ...p, params: { growth } } : p),
+  });
+  const cfg = { nodes, links: links.map((l) => (l.id === 'R3-R4' ? { ...l, bandwidthMbps: 1, queueSize: 2 } : l)), flows: [{ id: 'f1', src: 'R1', dst: 'R6', ratePps: 300, count: 300, payloadBytes: 1024 }], faults: [], routing: 'ls' as const, seed: 42, durationMs: 8000 };
+  const windowAtFastRtx = (growth: string) => {
+    const s = runSimulation({ ...cfg, stack: withGrowth(growth) }).metrics.samples;
+    const fast = new Set(s.filter((x) => x.kind === 'retransmit' && x.value === 2).map((x) => x.time));
+    // the window is cut at most once per window of data: look at the cuts that coincide with a fast retransmit
+    const cuts: number[] = [];
+    let prev = Infinity;
+    for (const x of s) {
+      if (x.kind !== 'cwnd') continue;
+      if (x.value < prev && fast.has(x.time)) cuts.push(x.value);
+      prev = x.value;
+    }
+    return cuts;
+  };
+  const tahoe = windowAtFastRtx('tahoe'), reno = windowAtFastRtx('slow-start');
+  assert(tahoe.length > 0 && tahoe.every((v) => v === 1), `Tahoe restarts from a window of 1 after a fast retransmit (${tahoe.length} cases)`);
+  assert(reno.length > 0 && reno.every((v) => v >= 2), `Reno's fast recovery resumes at half the window (min ${Math.min(...reno)} over ${reno.length} cases)`);
+}
+
+console.log('\n[23] Packet inspector: every hop records the packet as it entered the link');
+{
+  const { nodes, links } = defaultTopology();
+  const clean = links.map((l) => ({ ...l, lossPct: 0, corruptPct: 0 }));
+  const r = runSimulation({ nodes, links: clean, stack: reliableStack(), flows: [{ id: 'f1', src: 'R1', dst: 'R6', ratePps: 10, count: 5, payloadBytes: 512 }], faults: [], routing: 'ls', seed: 1, durationMs: 3000 });
+  const data = r.moves.filter((m) => !m.isAck);
+  const layers = data[0].headers!.map((h) => h.layer);
+  assert(JSON.stringify(layers) === JSON.stringify(['Application', 'Transport', 'Transport', 'Network']), `headers innermost → outermost: ${layers.join(', ')}`);
+  assert(data.every((m) => m.headers!.filter((h) => h.layer === 'Network').length === 1), 'a per-hop layer is re-wrapped, never stacked twice');
+  const hops = data.filter((m) => m.packetId === data[0].packetId).map((m) => m.ttl);
+  assert(hops.length === 4 && hops.every((t, i) => i === 0 || t === hops[i - 1]! - 1), `TTL falls by one per hop (${hops.join(' → ')})`);
+  const ack = r.moves.find((m) => m.isAck)!;
+  assert(ack.ackFor !== undefined && ack.cumAck !== undefined, `ACK hops carry what they acknowledge (ackFor ${ack.ackFor}, cumAck ${ack.cumAck})`);
+  const frag = runSimulation({ nodes, links: clean, stack: [app(), makeLayer('Transport', [{ kind: 'FRAGMENT', params: {} }], { headerBytes: 0, mtu: 200 }), net()], flows: [{ id: 'f1', src: 'R1', dst: 'R6', ratePps: 10, count: 2, payloadBytes: 512 }], faults: [], routing: 'ls', seed: 1, durationMs: 3000 });
+  const labels = [...new Set(frag.moves.map((m) => m.fragment))];
+  assert(labels.join(',') === '1/3,2/3,3/3', `fragments are labelled (${labels.join(', ')})`);
+  const bad = runSimulation({ nodes, links: links.map((l) => ({ ...l, lossPct: 0, corruptPct: 40 })), stack: unreliableStack(), flows: [{ id: 'f1', src: 'R1', dst: 'R6', ratePps: 10, count: 20, payloadBytes: 512 }], faults: [], routing: 'ls', seed: 1, durationMs: 4000 });
+  assert(bad.moves.some((m) => m.corruptedHere) && bad.moves.every((m) => !m.corruptedHere || m.corrupted), 'the hop that damaged a packet is marked');
+}
+
 console.log(`\n${failures === 0 ? '✅ ALL CHECKS PASSED' : '❌ ' + failures + ' CHECK(S) FAILED'}\n`);
 process.exit(failures === 0 ? 0 : 1);

@@ -7,6 +7,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { FLOW_COLORS, useSim } from '../store/simStore';
+import type { PacketMoveEvent } from '../sim-core/types';
 
 const SPEEDS = [
   { label: '0.5×', scale: 0.5 },
@@ -16,6 +17,7 @@ const SPEEDS = [
 
 type HopEvent = {
   t: number;
+  move: number; // index of the PacketMoveEvent this instant belongs to
   packetId: number;
   flowId: string;
   fromNode: string;
@@ -25,9 +27,13 @@ type HopEvent = {
 };
 
 export function TopologyView() {
-  const { nodes, nodePos, links, flows, moves, hasRun, lastConfig, selected, setSelected, liveRouting, moveNode, addFlow, routing } = useSim();
+  const { nodes, nodePos, links, flows, moves, hasRun, lastConfig, selected, setSelected, liveRouting, moveNode, addFlow, routing, addNode, resetTopology } = useSim();
   const [playT, setPlayT] = useState(0);
   const [playing, setPlaying] = useState(false);
+  const [picked, setPicked] = useState<number | null>(null); // index into moves
+  const [pickedFor, setPickedFor] = useState(moves); // a new run clears the inspected packet
+  if (pickedFor !== moves) { setPickedFor(moves); setPicked(null); }
+  const pick = (i: number) => { setPlaying(false); setPicked(i); };
   const [speed, setSpeed] = useState<number>(SPEEDS[0].scale); // default slow, so the counter is readable
   const rafRef = useRef<number | null>(null);
   const playTRef = useRef(0);
@@ -74,17 +80,19 @@ export function TopologyView() {
     return up;
   };
 
-  // packets in flight at playT
-  const inFlight = moves.filter((m) => playT >= m.departAt && playT <= m.arriveAt);
+  // packets in flight at playT (moves whose routers were deleted since the run can't be drawn)
+  const inFlight = moves
+    .map((m, i) => ({ m, i }))
+    .filter(({ m }) => playT >= m.departAt && playT <= m.arriveAt && nodePos[m.fromNode] && nodePos[m.toNode]);
 
   // every hop split into a depart instant + an arrive/drop instant, for a
   // frame-accurate readout of exactly what's happening on the wire right now
   const hopEvents = useMemo<HopEvent[]>(() => {
     const evs: HopEvent[] = [];
-    for (const m of moves) {
-      evs.push({ t: m.departAt, packetId: m.packetId, flowId: m.flowId, fromNode: m.fromNode, toNode: m.toNode, isAck: m.isAck, kind: 'depart' });
-      evs.push({ t: m.arriveAt, packetId: m.packetId, flowId: m.flowId, fromNode: m.fromNode, toNode: m.toNode, isAck: m.isAck, kind: m.dropped ? 'drop' : 'arrive' });
-    }
+    moves.forEach((m, move) => {
+      evs.push({ t: m.departAt, move, packetId: m.packetId, flowId: m.flowId, fromNode: m.fromNode, toNode: m.toNode, isAck: m.isAck, kind: 'depart' });
+      evs.push({ t: m.arriveAt, move, packetId: m.packetId, flowId: m.flowId, fromNode: m.fromNode, toNode: m.toNode, isAck: m.isAck, kind: m.dropped ? 'drop' : 'arrive' });
+    });
     return evs.sort((a, b) => a.t - b.t);
   }, [moves]);
 
@@ -139,20 +147,23 @@ export function TopologyView() {
           );
         })}
 
-        {/* in-flight packets */}
-        {inFlight.map((m, i) => {
+        {/* in-flight packets: click one to inspect it */}
+        {inFlight.map(({ m, i }) => {
           const from = nodePos[m.fromNode], to = nodePos[m.toNode];
           const frac = (playT - m.departAt) / Math.max(1, m.arriveAt - m.departAt);
           const x = from.x + (to.x - from.x) * frac;
           const y = from.y + (to.y - from.y) * frac;
           const dropHere = m.dropped && frac > 0.6;
           return (
-            <circle
-              key={m.packetId + '-' + i}
-              cx={x} cy={y} r={dropHere ? 3 : 5}
-              fill={dropHere ? 'var(--red)' : m.isAck ? 'var(--violet)' : flowColor(m.flowId)}
-              opacity={dropHere ? 0.4 : 1}
-            />
+            <g key={i} onClick={() => pick(i)} style={{ cursor: 'pointer' }}>
+              <circle cx={x} cy={y} r={11} fill="transparent" />
+              {picked === i && <circle cx={x} cy={y} r={9} fill="none" stroke="#fff" strokeWidth={2} />}
+              <circle
+                cx={x} cy={y} r={dropHere ? 3 : 5}
+                fill={dropHere ? 'var(--red)' : m.isAck ? 'var(--violet)' : flowColor(m.flowId)}
+                opacity={dropHere ? 0.4 : 1}
+              />
+            </g>
           );
         })}
 
@@ -183,7 +194,13 @@ export function TopologyView() {
           );
         })}
         <button className="btn secondary small" onClick={addFlow}>+ Add flow</button>
-        <span style={{ fontSize: 10.5, color: 'var(--muted)' }}>Drag a router to move it.</span>
+      </div>
+
+      <div className="row" style={{ marginTop: 8 }}>
+        <span style={{ fontSize: 11, color: 'var(--muted)' }}>Topology</span>
+        <button className="btn secondary small" onClick={addNode}>+ Router</button>
+        <button className="btn secondary small" onClick={resetTopology}>Reset topology</button>
+        <span style={{ fontSize: 10.5, color: 'var(--muted)' }}>Drag routers to move them; select one to connect or delete it.</span>
       </div>
 
       <div className="row" style={{ marginTop: 10 }}>
@@ -241,7 +258,8 @@ export function TopologyView() {
       >
         {recentLog.length === 0 && <div>— replay to see packet events at each instant —</div>}
         {recentLog.map((e, i) => (
-          <div key={e.t + '-' + e.packetId + '-' + e.kind + '-' + i}>
+          <div key={e.t + '-' + e.packetId + '-' + e.kind + '-' + i} onClick={() => pick(e.move)} title="Inspect this packet"
+            style={{ cursor: 'pointer', background: picked === e.move ? 'rgba(255,255,255,.07)' : undefined, borderRadius: 4 }}>
             <span style={{ color: 'var(--muted)' }}>t={(e.t / 1000).toFixed(3)}s</span>{'  '}
             <span style={{ color: e.isAck ? 'var(--violet)' : flowColor(e.flowId) }}>{e.flowId}</span>{' '}
             <span>#{e.packetId}{e.isAck ? ' ACK' : ''} {e.fromNode}→{e.toNode}</span>{'  '}
@@ -254,12 +272,79 @@ export function TopologyView() {
         ))}
       </div>
 
+      {picked !== null && moves[picked] ? (
+        <PacketInspector moves={moves} index={picked} color={flowColor(moves[picked].flowId)} onPick={pick} onClose={() => setPicked(null)} />
+      ) : hasRun && (
+        <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>Click a moving dot or an event-log line to inspect that packet.</div>
+      )}
+
       {traced && (
         <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 6 }}>
           {traced.src}→{traced.dst} route now ({routing.toUpperCase()}):{' '}
           <span className="mono" style={{ color: 'var(--teal)' }}>
             {traceRoute(route.nextHop, traced.src, traced.dst).join(' → ')}
           </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** One packet on one hop: its header stack (outermost first) and its whole journey. */
+function PacketInspector({ moves, index, color, onPick, onClose }: {
+  moves: PacketMoveEvent[]; index: number; color: string; onPick: (i: number) => void; onClose: () => void;
+}) {
+  const m = moves[index];
+  const journey = moves.map((x, i) => ({ x, i })).filter(({ x }) => x.packetId === m.packetId);
+  const headers = [...(m.headers ?? [])].reverse();
+  const outcome = m.dropped ? `lost on this link (${m.dropReason ?? 'loss'})`
+    : m.corruptedHere ? 'damaged on this link (a bit of the payload flipped)'
+    : m.corrupted ? 'arrives, but was damaged on an earlier link' : 'arrives intact';
+  const fmt = (t: number) => `${(t / 1000).toFixed(3)}s`;
+  const headerBytes = m.size !== undefined ? m.size : undefined;
+  return (
+    <div style={{ marginTop: 10, background: 'var(--panel-2)', border: `1px solid ${color}`, borderRadius: 8, padding: '10px 12px' }}>
+      <div className="layer-head">
+        <span style={{ fontWeight: 600, fontSize: 13 }}>
+          {m.isAck ? `ACK for seq ${m.ackFor} (cumulative up to ${m.cumAck})` : `Packet #${m.packetId}`}
+          <span style={{ color: 'var(--muted)', fontWeight: 400 }}>
+            {'  '}flow {m.flowId}{m.isAck ? '' : ` · seq ${m.seq}`}{m.fragment ? ` · fragment ${m.fragment}` : ''}
+          </span>
+        </span>
+        <button className="btn secondary small" onClick={onClose}>✕</button>
+      </div>
+      <div className="mono" style={{ fontSize: 11.5, color: 'var(--muted)', margin: '6px 0 8px', lineHeight: 1.6 }}>
+        <div>hop {m.fromNode} → {m.toNode}, departs {fmt(m.departAt)}, arrives {fmt(m.arriveAt)}</div>
+        <div>size {headerBytes ?? '?'} B · TTL {m.ttl ?? '?'} ·{' '}
+          <span style={{ color: m.dropped || m.corrupted ? 'var(--red)' : 'var(--teal)' }}>{outcome}</span>
+        </div>
+      </div>
+      <div className="kicker" style={{ marginBottom: 6 }}>Header stack, outermost first</div>
+      {headers.length === 0 && (
+        <div style={{ fontSize: 11.5, color: 'var(--muted)' }}>
+          {m.isAck ? 'None: ACKs are 40-byte control packets that skip the stack\'s layers.' : 'None: this stack adds no headers.'}
+        </div>
+      )}
+      {headers.map((h, i) => (
+        <div key={i} style={{ marginLeft: i * 10, marginBottom: 4, padding: '4px 8px', borderLeft: `2px solid ${i === 0 ? 'var(--violet)' : 'var(--border)'}`, background: 'var(--panel)', borderRadius: 4 }}>
+          <span style={{ fontSize: 11.5, fontWeight: 600 }}>{h.layer}</span>{'  '}
+          <span className="mono" style={{ fontSize: 11, color: 'var(--muted)' }}>
+            {Object.entries(h.fields).map(([k, v]) => `${k}=${v}`).join('  ')}
+          </span>
+        </div>
+      ))}
+      <div style={{ marginLeft: headers.length * 10, fontSize: 11, color: 'var(--muted)', padding: '2px 8px' }}>
+        {m.isAck ? 'ACK body' : 'payload'}{m.corrupted ? ' (damaged)' : ''}
+      </div>
+      {journey.length > 1 && (
+        <div style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)' }}>
+          Journey:{' '}
+          {journey.map(({ x, i }) => (
+            <button key={i} className="btn secondary small" onClick={() => onPick(i)}
+              style={{ marginRight: 4, marginTop: 4, borderColor: i === index ? color : undefined, color: x.dropped ? 'var(--red)' : undefined }}>
+              {x.fromNode}→{x.toNode}
+            </button>
+          ))}
         </div>
       )}
     </div>
